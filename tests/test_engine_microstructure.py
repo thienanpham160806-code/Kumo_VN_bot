@@ -103,3 +103,51 @@ def test_settlement_days_read_from_config(monkeypatch, settlement):
     )
     result = _run(frame, _signal(frame, stop=95, target=130))
     assert result.trades["exit_time"].iloc[0] == frame["time"].iloc[1 + settlement]
+
+
+# ------------------------------------------------------------- 2. gap qua stop/target
+def test_gap_down_below_stop_fills_at_open_not_at_stop():
+    """Mo cua 88 da thung stop 95 -> lenh dung lo khop o 88, khong phai 95."""
+    frame = _frame(
+        [
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),   # T
+            (100, 101, 99, 100),   # T+1
+            (88, 90, 86, 89),      # T+2: gap xuong duoi stop
+            (89, 90, 88, 89),
+        ]
+    )
+    result = _run(frame, _signal(frame, stop=95, target=130))
+    trade = result.trades.iloc[0]
+    assert trade["exit"] == pytest.approx(88)
+    assert trade["exit_time"] == frame["time"].iloc[3]
+
+
+def test_gap_up_above_target_fills_at_open_not_at_target():
+    """Mo cua 125 da vuot target 110 -> chot loi o 125 (gia thi truong luc mo cua)."""
+    frame = _frame(
+        [
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),
+            (125, 128, 122, 126),  # T+2: gap len tren target
+            (126, 127, 125, 126),
+        ]
+    )
+    result = _run(frame, _signal(frame, stop=95, target=110))
+    trade = result.trades.iloc[0]
+    assert trade["exit"] == pytest.approx(125)
+
+
+def test_intraday_touch_without_gap_still_fills_at_level():
+    frame = _frame(
+        [
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),
+            (99, 100, 93, 96),     # mo cua tren stop, trong phien cham stop
+            (96, 97, 95, 96),
+        ]
+    )
+    result = _run(frame, _signal(frame, stop=95, target=130))
+    assert result.trades.iloc[0]["exit"] == pytest.approx(95)

@@ -8,6 +8,9 @@ Cac nguyen tac chong tu lua, deu da duoc cai o day:
   4. Chu ky thanh toan T+2 (costs.settlement_days): co phieu mua o phien T chi
      ban duoc tu phien T+2, dem theo PHIEN trong lich giao dich
      (risk/constraints.is_settled) - stop/target cham truoc do deu bi bo qua.
+  5. Gap: neu gia mo cua da nam duoi stop (hoac tren target) thi khop o gia mo
+     cua, khong phai o muc stop/target. Neu ca stop va target cung bi cham
+     trong phien ma khong gap, gia dinh BI QUAN la stop cham truoc.
 """
 from __future__ import annotations
 
@@ -108,7 +111,14 @@ def run(
             bar = frame.loc[today]
             exit_price = exit_reason = None
 
-            if float(bar["low"]) <= trade.stop_loss:
+            # Gap: mo cua da vuot qua stop/target thi lenh cho (stop/limit) khop
+            # o gia mo cua - gia tot nhat CON co, khong phai muc da dat.
+            bar_open = float(bar["open"])
+            if bar_open <= trade.stop_loss:
+                exit_price, exit_reason = bar_open, "Mo cua duoi diem dung lo (gap)"
+            elif bar_open >= trade.target:
+                exit_price, exit_reason = bar_open, "Mo cua tren muc tieu (gap)"
+            elif float(bar["low"]) <= trade.stop_loss:
                 exit_price, exit_reason = trade.stop_loss, "Cham diem dung lo"
             elif float(bar["high"]) >= trade.target:
                 exit_price, exit_reason = trade.target, "Cham muc tieu"
