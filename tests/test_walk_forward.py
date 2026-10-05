@@ -112,3 +112,24 @@ def test_signal_cache_matches_generate_buy_signals():
                                         ichimoku_preset=params.ichimoku_preset)
         pd.testing.assert_frame_equal(cache(params).reset_index(drop=True),
                                       expected.reset_index(drop=True))
+
+
+def test_sharpe_report_uses_grid_size_as_n_trials():
+    from bot_phan_tich.backtest import metrics
+
+    frame = _uptrend("2022-01-03", "2023-07-03")
+    dense = _signals_every(frame, 3, pd.Timestamp("2022-01-03"), pd.Timestamp("2024-01-01"))
+    sparse = _signals_every(frame, 15, pd.Timestamp("2022-01-03"), pd.Timestamp("2024-01-01"))
+    grid = (_A, _B, StrategyParams(60, "goc_nhat_6ngay", 20))
+    lookup = {_A: dense, _B: sparse, grid[2]: dense.iloc[::2]}
+    result = walk_forward({"AAA": frame}, lookup.__getitem__, grid=grid, train_months=6,
+                          test_months=3, exchanges={"AAA": "HOSE"})
+    report = result.sharpe_report()
+
+    assert report["n_trials"] == 3
+    per_day = result.trials["train_sharpe"] / np.sqrt(252)
+    expected_var = per_day.groupby(result.trials["train_start"]).var(ddof=1).mean()
+    assert report["sr_variance"] == pytest.approx(expected_var)
+    assert report["dsr"] == pytest.approx(metrics.deflated_sharpe(
+        report["sr"], 3, report["n_obs"], expected_var, report["skew"], report["kurtosis"]))
+    assert 0.0 <= report["dsr"] <= report["psr"] <= 1.0

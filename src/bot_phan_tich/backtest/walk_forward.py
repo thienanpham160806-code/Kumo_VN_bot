@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from itertools import product
 
+import numpy as np
 import pandas as pd
 
 from ..analysis.score_history import score_history
@@ -102,6 +103,29 @@ class WalkForwardResult:
     def n_trials(self) -> int:
         """So bo tham so da thu - n_trials cho Deflated Sharpe."""
         return len(self.grid)
+
+    def trial_sharpe_variance(self) -> float:
+        """Phuong sai Sharpe THEO NGAY giua cac bo tham so tren cung cua so
+        train, trung binh qua cac lat - V[SR_n] cho Deflated Sharpe."""
+        if self.trials.empty or self.n_trials < 2:
+            return 0.0
+        per_day = self.trials["train_sharpe"] / np.sqrt(metrics.TRADING_DAYS)
+        return float(per_day.groupby(self.trials["train_start"]).var(ddof=1).mean())
+
+    def sharpe_report(self) -> dict:
+        """PSR(0) va DSR cua duong von out-of-sample, n_trials = so bo tham so."""
+        moments = metrics.sharpe_moments(self.equity.pct_change().dropna())
+        args = (moments["sr"], moments["n_obs"], moments["skew"], moments["kurtosis"])
+        return {
+            **moments,
+            "psr": metrics.probabilistic_sharpe(*args),
+            "dsr": metrics.deflated_sharpe(
+                moments["sr"], self.n_trials, moments["n_obs"], self.trial_sharpe_variance(),
+                moments["skew"], moments["kurtosis"],
+            ),
+            "n_trials": self.n_trials,
+            "sr_variance": self.trial_sharpe_variance(),
+        }
 
 
 def _window(signals: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:

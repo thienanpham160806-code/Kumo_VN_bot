@@ -95,6 +95,10 @@ def _run_walk_forward(prices, cache: SignalCache, train_months: int, test_months
     print(f"\n=== Out-of-sample ghep ({len(result.slices)} lat, "
           f"{result.n_trials} bo tham so da thu) ===")
     print(metrics.format_report(metrics.summarise(result.equity, result.trades)))
+    report = result.sharpe_report()
+    print(f"PSR (P[Sharpe that > 0]): {report['psr']:.3f}")
+    print(f"DSR (n_trials={report['n_trials']}, V[SR ngay]={report['sr_variance']:.2e}): "
+          f"{report['dsr']:.3f}")
 
 
 def _load_universe_frames(symbols: list[str]) -> dict[str, pd.DataFrame]:
