@@ -8,8 +8,19 @@ import pandas as pd
 import pytest
 
 from bot_phan_tich.backtest.engine import run
+from bot_phan_tich.data import market_store
 
 _VOLUME = 10_000_000.0  # du lon de max_participation khong chan khoi luong
+
+
+def _symbols(exchange: str):
+    return lambda: pd.DataFrame({"symbol": ["AAA"], "exchange": [exchange]})
+
+
+@pytest.fixture(autouse=True)
+def _hose_listing(monkeypatch):
+    """Khong phu thuoc data/market/symbols.parquet tren may: AAA mac dinh la HOSE."""
+    monkeypatch.setattr(market_store, "load_symbols", _symbols("HOSE"))
 
 
 def _frame(bars: list[tuple[float, float, float, float]]) -> pd.DataFrame:
@@ -151,3 +162,65 @@ def test_intraday_touch_without_gap_still_fills_at_level():
     )
     result = _run(frame, _signal(frame, stop=95, target=130))
     assert result.trades.iloc[0]["exit"] == pytest.approx(95)
+
+
+# ------------------------------------------------------------ 3. ket gia san
+# Gia tham chieu 20.000 -> san HOSE = 18.600 (-7%), san HNX = 18.000 (-10%).
+_LOCKED_AT_FLOOR = (18_600, 18_600, 18_600, 18_600)
+
+
+def _floor_frame(*after_t2):
+    return _frame(
+        [
+            (20_000, 20_100, 19_900, 20_000),
+            (20_000, 20_100, 19_900, 20_000),   # T
+            (20_000, 20_100, 19_900, 20_000),   # T+1
+            *after_t2,
+        ]
+    )
+
+
+def test_stop_on_floor_locked_session_is_deferred_to_next_session():
+    """T+2 dong cua o gia san va low == san -> khong ai mua, khong ban duoc.
+    Lenh ban doi sang phien sau, khop o gia mo cua phien do."""
+    frame = _floor_frame(_LOCKED_AT_FLOOR, (17_400, 17_800, 17_300, 17_500), (17_500,) * 4)
+    result = _run(frame, _signal(frame, stop=19_000, target=30_000))
+    trade = result.trades.iloc[0]
+    assert trade["exit_time"] == frame["time"].iloc[4]
+    assert trade["exit"] == pytest.approx(17_400)
+
+
+def test_consecutive_floor_locks_keep_deferring():
+    # san phien 4: 18.600 * 0.93 = 17.298 -> lam tron len buoc gia 50 = 17.300
+    frame = _floor_frame(
+        _LOCKED_AT_FLOOR, (17_300,) * 4, (16_500, 16_900, 16_400, 16_800), (16_800,) * 4
+    )
+    result = _run(frame, _signal(frame, stop=19_000, target=30_000))
+    trade = result.trades.iloc[0]
+    assert trade["exit_time"] == frame["time"].iloc[5]
+    assert trade["exit"] == pytest.approx(16_500)
+
+
+def test_floor_uses_exchange_band_from_symbols_data(monkeypatch):
+    """-7% la gia san cua HOSE nhung KHONG phai cua HNX (bien do 10%): ma HNX
+    van ban duoc ngay trong phien do."""
+    monkeypatch.setattr(market_store, "load_symbols", _symbols("HNX"))
+    frame = _floor_frame(_LOCKED_AT_FLOOR, (17_400, 17_800, 17_300, 17_500))
+    result = _run(frame, _signal(frame, stop=19_000, target=30_000))
+    trade = result.trades.iloc[0]
+    assert trade["exit_time"] == frame["time"].iloc[3]
+    assert trade["exit"] == pytest.approx(18_600)
+
+
+def test_explicit_exchange_mapping_overrides_symbols_data():
+    frame = _floor_frame(_LOCKED_AT_FLOOR, (17_400, 17_800, 17_300, 17_500))
+    result = _run(frame, _signal(frame, stop=19_000, target=30_000), exchanges={"AAA": "HNX"})
+    assert result.trades.iloc[0]["exit_time"] == frame["time"].iloc[3]
+
+
+def test_close_at_floor_but_low_below_close_is_not_locked():
+    """low < close nghia la da co giao dich duoi gia dong cua -> khong phai
+    trang thai trang ben mua o gia san."""
+    frame = _floor_frame((18_900, 19_000, 18_600, 18_700), (18_700,) * 4)
+    result = _run(frame, _signal(frame, stop=19_000, target=30_000))
+    assert result.trades.iloc[0]["exit_time"] == frame["time"].iloc[3]
