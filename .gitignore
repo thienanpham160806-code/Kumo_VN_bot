@@ -29,7 +29,10 @@ __pycache__/
 # log & output
 logs/
 *.log
-outputs/
+# outputs/ khong commit, TRU ket qua kiem dinh nho dung trong README
+outputs/*
+!outputs/ic/
+!outputs/backtest/
 
 # IDE / OS
 .vscode/

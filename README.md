@@ -142,6 +142,9 @@ python scripts/backfill_fundamentals.py
 # Backtest chiến lược 3 và 6 tháng gần nhất, so với mua-và-giữ VN-Index.
 # Xuất outputs/backtest_3m.csv, backtest_6m.csv, outputs/equity_curve.png.
 python scripts/run_backtest.py
+
+# Phân tích IC của điểm MACD/RSI/Ichimoku/tổng (mục 5b) -> outputs/ic/.
+python scripts/ic_analysis.py
 ```
 
 Kiểm thử: `pytest -q`. Chất lượng mã: `ruff check src tests scripts`.
@@ -216,6 +219,60 @@ nhiêu — xem `analysis/scoring.py`.
 Các hàm nặng (tra cứu, khuyến nghị, vẽ biểu đồ, text mining BCTC, quét
 watchlist) chạy qua `await asyncio.to_thread(...)` trong handler, nên `/help`
 vẫn trả lời ngay khi đang có lệnh nặng khác (xem `tests/test_nonblocking.py`).
+
+---
+
+## 5b. Kiểm định định lượng
+
+### Phân tích Information Coefficient (IC)
+
+`python scripts/ic_analysis.py` (module `backtest/ic.py`). Mỗi phiên t, trên
+**mặt cắt** các mã trong vũ trụ thanh khoản *tại thời điểm đó* (chọn theo dữ
+liệu đến hết tháng trước), tính tương quan hạng Spearman giữa điểm của từng
+hệ chỉ báo (chỉ dùng dữ liệu đến t) và lợi suất từ **giá mở cửa t+1** đến giá
+mở cửa t+1+h. IC đo xem điểm số có **xếp hạng đúng** mã nào sẽ tăng hơn mã nào
+hay không. Kết quả đầy đủ: `outputs/ic/` (`ic_summary.csv`, `ic_daily.csv`,
+`ic_monthly.csv`, `ic_decay.png`).
+
+Mẫu: 02/01/2024 – 22/09/2026, 675 phiên, trung vị 280 mã/phiên.
+
+| Chỉ báo | h | IC TB | Độ lệch chuẩn | ICIR | t-stat | t-stat Newey-West | Tháng IC > 0 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MACD | 5 | 0,0025 | 0,117 | 0,02 | 0,55 | 0,32 | 58% |
+| MACD | 10 | 0,0152 | 0,111 | 0,14 | 3,54 | 1,72 | 61% |
+| MACD | 20 | 0,0163 | 0,104 | 0,16 | 4,00 | 1,44 | 66% |
+| RSI | 5 | −0,0155 | 0,130 | −0,12 | −3,09 | −1,88 | 33% |
+| RSI | 10 | 0,0050 | 0,124 | 0,04 | 1,04 | 0,52 | 61% |
+| RSI | 20 | 0,0212 | 0,119 | 0,18 | 4,56 | 1,72 | 69% |
+| Ichimoku | 5 | 0,0082 | 0,131 | 0,06 | 1,62 | 0,91 | 64% |
+| Ichimoku | 10 | 0,0160 | 0,124 | 0,13 | 3,34 | 1,42 | 64% |
+| Ichimoku | 20 | 0,0218 | 0,117 | 0,19 | 4,79 | 1,50 | 66% |
+| Điểm tổng | 5 | −0,0010 | 0,133 | −0,01 | −0,19 | −0,11 | 58% |
+| Điểm tổng | 10 | 0,0135 | 0,125 | 0,11 | 2,78 | 1,25 | 61% |
+| Điểm tổng | 20 | 0,0227 | 0,113 | 0,20 | 5,15 | 1,72 | 72% |
+
+![IC decay](outputs/ic/ic_decay.png)
+
+**Diễn giải — kết quả gần như bằng 0, và cần nói thẳng như vậy:**
+
+- **IC rất nhỏ.** Mọi |IC| ≤ 0,023. Không có hệ nào, kể cả điểm tổng, có ý
+  nghĩa thống kê ở mức 5% sau khi hiệu chỉnh: t-stat Newey-West cao nhất là
+  1,72 (< 1,96).
+- **t-stat thường bị thổi phồng.** Với h = 10–20, lợi suất của hai phiên liền
+  nhau dùng chung 9–19 phiên, nên chuỗi IC tự tương quan mạnh. t-stat thường
+  (3,5–5,2, trông "rất có ý nghĩa") cao gấp 2–3 lần t-stat Newey-West (độ trễ =
+  h). Nếu chỉ báo cáo t-stat thường sẽ tự lừa mình.
+- **Đảo chiều ngắn hạn là tín hiệu rõ nhất, và nó ngược chiều chiến lược.** Ở
+  h = 1 phiên IC **âm có ý nghĩa**: RSI −0,038 (t Newey-West −7,7, chỉ 6% số
+  tháng có IC > 0), điểm tổng −0,020 (t −4,1). Mã có điểm cao hôm nay có xu
+  hướng giảm lại trong 1–2 phiên kế tiếp; từ h ≈ 10 phiên IC mới chuyển sang
+  dương, và vẫn yếu. Chiến lược mua ngay giá mở cửa sau ngày điểm cao, với dừng lỗ
+  1,5 ATR, đi đúng vào nhịp điều chỉnh này. Đó là một lời giải thích hợp lý
+  cho kết quả backtest yếu ở mục dưới.
+- **Giới hạn:** chỉ ~2,7 năm dữ liệu (kho giữ ~750 phiên mỗi mã), giá đã điều
+  chỉnh cổ tức, vũ trụ lấy sàn theo danh sách hiện tại. IC đo khả năng *xếp
+  hạng* giữa các mã; chiến lược thật là *định thời điểm* có stop/target, nên
+  hai thước đo bổ sung cho nhau chứ không thay thế nhau.
 
 ---
 
