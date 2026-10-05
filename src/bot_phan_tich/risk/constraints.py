@@ -50,12 +50,28 @@ def can_open(
     return True, ""
 
 
+def settlement_days() -> int:
+    """So phien thanh toan (T+N) doc tu config: costs.settlement_days."""
+    return int(get_settings().get("costs.settlement_days", 2))
+
+
+def is_settled(entry_session: int, today_session: int) -> bool:
+    """T+N tinh theo PHIEN GIAO DICH (chi so trong lich giao dich), khong theo
+    ngay trong tuan: mua o phien `entry_session` thi ban duoc tu phien
+    entry_session + N. Dem theo ngay trong tuan se sai quanh nghi le (Tet nghi
+    ca tuan -> "T+2" theo ngay lam viec roi vao ky nghi, phien mo lai dau tien
+    chi la T+1 theo phien). Dung trong backtest/engine.py.
+    """
+    return today_session - entry_session >= settlement_days()
+
+
 def is_sellable(state: PortfolioState, symbol: str, today: date) -> tuple[bool, str]:
-    """Kiem tra chu ky thanh toan T+2."""
+    """Kiem tra chu ky thanh toan T+2 (cho bot, dem theo ngay lam viec - khong
+    co lich nghi le; backtest dung is_settled() voi lich phien that)."""
     entry = state.entry_dates.get(symbol)
     if entry is None:
         return True, ""
-    days = get_settings().get("costs.settlement_days", 2)
+    days = settlement_days()
     available = _add_business_days(entry, days)
     if today < available:
         return False, f"Chua ve tai khoan, ban duoc tu {available:%d/%m/%Y}"

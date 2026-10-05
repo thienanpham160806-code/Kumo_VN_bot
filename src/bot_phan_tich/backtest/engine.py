@@ -1,10 +1,13 @@
 """Khung backtest theo su kien.
 
-Ba nguyen tac chong tu lua, deu da duoc cai o day:
+Cac nguyen tac chong tu lua, deu da duoc cai o day:
   1. Vao lenh o gia MO CUA phien ke tiep, khong phai gia dong cua phien co tin hieu.
   2. Tru day du phi hai chieu va thue thu nhap ca nhan khi ban.
   3. Gioi han khoi luong khop khong vuot qua max_participation lan khoi luong phien
      de phan anh truot gia.
+  4. Chu ky thanh toan T+2 (costs.settlement_days): co phieu mua o phien T chi
+     ban duoc tu phien T+2, dem theo PHIEN trong lich giao dich
+     (risk/constraints.is_settled) - stop/target cham truoc do deu bi bo qua.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import pandas as pd
 
 from ..config import get_settings
 from ..logging_conf import get_logger
+from ..risk import constraints
 from ..risk.sizing import position_size, r_multiple
 
 log = get_logger(__name__)
@@ -30,6 +34,7 @@ class Trade:
     exit_time: pd.Timestamp | None = None
     exit_price: float | None = None
     exit_reason: str = ""
+    entry_session: int = 0  # chi so phien vao lenh trong lich giao dich (cho T+2)
 
     @property
     def closed(self) -> bool:
@@ -98,6 +103,8 @@ def run(
             frame = indexed.get(trade.symbol)
             if frame is None or today not in frame.index:
                 continue
+            if not constraints.is_settled(trade.entry_session, i):
+                continue  # chua ve tai khoan (T+2): khong ban duoc du cham stop/target
             bar = frame.loc[today]
             exit_price = exit_reason = None
 
@@ -148,7 +155,7 @@ def run(
                 cash -= cost
                 open_trades.append(
                     Trade(symbol, today, entry, shares, float(signal["stop_loss"]),
-                          float(signal["target"]))
+                          float(signal["target"]), entry_session=i)
                 )
 
         # ---------- 3. dinh gia danh muc ----------
