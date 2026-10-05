@@ -15,11 +15,16 @@ Cac nguyen tac chong tu lua, deu da duoc cai o day:
      cua tung ma, risk/constraints.floor_locked) coi nhu KHONG ban duoc - lenh
      ban (stop/target/het han) doi sang phien ke tiep, khop o gia mo cua phien
      dau tien khong con ket san.
+
+Dinh gia moi phien theo gia dong cua; ngay ma khong co phien (tam ngung giao
+dich, thieu du lieu) dung gia dong cua GAN NHAT, khong phai gia vao lenh.
 """
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from ..config import get_settings
@@ -44,6 +49,8 @@ class Trade:
     exit_reason: str = ""
     entry_session: int = 0  # chi so phien vao lenh trong lich giao dich (cho T+2)
     pending_exit: str | None = None  # ly do ban da kich hoat nhung bi ket san
+    entry_row: int = 0  # hang vao lenh trong du lieu CUA MA (dem so phien nam giu)
+    last_close: float = 0.0  # gia dong cua gan nhat, dung de dinh gia
 
     @property
     def closed(self) -> bool:
@@ -78,42 +85,110 @@ class BacktestResult:
     logs: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _Bars:
+    """Gia mot ma o dang mang; row[i] = hang cua phien calendar[i] (-1 = khong co phien)."""
+
+    row: np.ndarray
+    open: np.ndarray
+    high: np.ndarray
+    low: np.ndarray
+    close: np.ndarray
+    volume: np.ndarray
+    floor_locked: np.ndarray
+
+
+@dataclass
+class PreparedPrices:
+    """Gia da chuan bi san cho run(): lich giao dich chung + mang gia tung ma.
+
+    Chuan bi mot lan, dung lai cho hang tram lan chay (walk-forward, do nhay
+    chi phi) - tranh tinh lai floor_locked va lich moi lan.
+    """
+
+    calendar: list[pd.Timestamp]
+    bars: dict[str, _Bars]
+
+
+def prepare_prices(
+    price_frames: dict[str, pd.DataFrame], exchanges: dict[str, str] | None = None
+) -> PreparedPrices:
+    """`exchanges`: ma -> san (HOSE/HNX/UPCOM) de lay bien do gia san. None = doc
+    tu du lieu symbols trong kho (data/market_store.load_symbols); ma khong co
+    trong do mac dinh HOSE (bien do hep nhat)."""
+    frames = {sym: f.sort_values("time") for sym, f in price_frames.items() if not f.empty}
+    if not frames:
+        return PreparedPrices([], {})
+    times = np.unique(np.concatenate([f["time"].to_numpy() for f in frames.values()]))
+    calendar = list(pd.DatetimeIndex(times))
+    exchange_of = _resolve_exchanges(list(frames), exchanges)
+
+    bars = {}
+    for sym, frame in frames.items():
+        row = np.full(len(times), -1, dtype=np.int64)
+        row[np.searchsorted(times, frame["time"].to_numpy())] = np.arange(len(frame))
+        bars[str(sym).upper()] = _Bars(
+            row=row,
+            open=frame["open"].to_numpy(dtype=float),
+            high=frame["high"].to_numpy(dtype=float),
+            low=frame["low"].to_numpy(dtype=float),
+            close=frame["close"].to_numpy(dtype=float),
+            volume=frame["volume"].to_numpy(dtype=float),
+            floor_locked=constraints.floor_locked(frame, exchange_of[sym]).to_numpy(),
+        )
+    return PreparedPrices(calendar, bars)
+
+
 def run(
-    price_frames: dict[str, pd.DataFrame],
+    price_frames: dict[str, pd.DataFrame] | PreparedPrices,
     signals: pd.DataFrame,
     initial_capital: float = 100_000_000,
     max_participation: float = 0.10,
     max_hold_days: int = 20,
     exchanges: dict[str, str] | None = None,
+    fee_rate: float | None = None,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+    close_at_end: bool = False,
 ) -> BacktestResult:
     """signals: DataFrame gom cot symbol, time, stop_loss, target (tin hieu mua).
 
-    `exchanges`: ma -> san (HOSE/HNX/UPCOM) de lay bien do gia san. None = doc
-    tu du lieu symbols trong kho (data/market_store.load_symbols); ma khong co
-    trong do mac dinh HOSE (bien do hep nhat).
+    `price_frames`: dict ma -> OHLCV, hoac PreparedPrices (prepare_prices) da
+    chuan bi san. `exchanges`: xem prepare_prices (bo qua neu da chuan bi).
+    `fee_rate`: phi hai chieu, None = costs.fee_rate trong config.
+    `start`/`end`: chi chay tren cac phien trong [start, end) - duong von va
+    moi chi so chi phu thuoc khoang nay; gia truoc `start` van dung de xac
+    dinh gia tham chieu/gia san. Tin hieu truoc `start` bi bo qua.
+    `close_at_end`: dong moi vi the o gia dong cua phien cuoi (co tru phi,
+    thue) va khong mo vi the moi trong `settlement_days` phien cuoi (de vi the
+    nao cung ban duoc theo T+2) - dung cho tung lat walk-forward.
     """
     settings = get_settings()
-    fee = settings.get("costs.fee_rate", 0.0025)
+    fee = settings.get("costs.fee_rate", 0.0025) if fee_rate is None else fee_rate
     tax = settings.get("costs.sell_tax_rate", 0.001)
+    risk_per_trade = settings.get("risk.risk_per_trade", 0.01)
+    max_weight = settings.get("risk.max_weight_per_symbol", 0.15)
+    settle_days = constraints.settlement_days()
 
-    calendar = sorted({t for frame in price_frames.values() for t in frame["time"]})
-    if not calendar:
+    prices = (
+        price_frames if isinstance(price_frames, PreparedPrices)
+        else prepare_prices(price_frames, exchanges)
+    )
+    calendar = prices.calendar
+    first = 0 if start is None else bisect_left(calendar, pd.Timestamp(start))
+    stop = len(calendar) if end is None else bisect_left(calendar, pd.Timestamp(end))
+    if stop <= first:
         return BacktestResult(pd.Series(dtype=float), pd.DataFrame(), initial_capital)
+    last_entry_session = stop - 1 - settle_days if close_at_end else stop - 1
 
-    exchange_of = _resolve_exchanges(list(price_frames), exchanges)
-    indexed = {}
-    for sym, frame in price_frames.items():
-        frame = frame.sort_values("time")
-        frame = frame.assign(_floor_locked=constraints.floor_locked(frame, exchange_of[sym]))
-        indexed[sym] = frame.set_index("time")
-    by_time: dict[pd.Timestamp, list] = {}
-    for _, row in signals.iterrows():
-        by_time.setdefault(pd.Timestamp(row["time"]), []).append(row)
+    by_time: dict[pd.Timestamp, list[dict]] = {}
+    for signal in signals.to_dict("records"):
+        by_time.setdefault(pd.Timestamp(signal["time"]), []).append(signal)
 
     cash = initial_capital
     open_trades: list[Trade] = []
     closed: list[dict] = []
-    equity_points: list[tuple[pd.Timestamp, float]] = []
+    equity_points: list[float] = []
 
     def _close(trade: Trade, price: float, reason: str) -> None:
         nonlocal cash
@@ -124,39 +199,38 @@ def run(
         closed.append(trade.result(fee, tax))
         open_trades.remove(trade)
 
-    for i, today in enumerate(calendar):
+    for i in range(first, stop):
+        today = calendar[i]
         # ---------- 1. cap nhat cac vi the dang mo ----------
         for trade in list(open_trades):
-            frame = indexed.get(trade.symbol)
-            if frame is None or today not in frame.index:
+            bars = prices.bars[trade.symbol]
+            r = bars.row[i]
+            if r < 0:
                 continue
-            if not constraints.is_settled(trade.entry_session, i):
+            if not constraints.is_settled(trade.entry_session, i, settle_days):
                 continue  # chua ve tai khoan (T+2): khong ban duoc du cham stop/target
-            bar = frame.loc[today]
-            locked = bool(bar["_floor_locked"])
+            locked = bool(bars.floor_locked[r])
             exit_price = exit_reason = None
 
             if trade.pending_exit is not None:
                 # Lenh ban tu phien ket san truoc: ban o gia mo cua neu het ket.
                 if not locked:
-                    _close(trade, float(bar["open"]), f"{trade.pending_exit} (tre do ket san)")
+                    _close(trade, float(bars.open[r]), f"{trade.pending_exit} (tre do ket san)")
                 continue
 
             # Gap: mo cua da vuot qua stop/target thi lenh cho (stop/limit) khop
             # o gia mo cua - gia tot nhat CON co, khong phai muc da dat.
-            bar_open = float(bar["open"])
+            bar_open = float(bars.open[r])
             if bar_open <= trade.stop_loss:
                 exit_price, exit_reason = bar_open, "Mo cua duoi diem dung lo (gap)"
             elif bar_open >= trade.target:
                 exit_price, exit_reason = bar_open, "Mo cua tren muc tieu (gap)"
-            elif float(bar["low"]) <= trade.stop_loss:
+            elif bars.low[r] <= trade.stop_loss:
                 exit_price, exit_reason = trade.stop_loss, "Cham diem dung lo"
-            elif float(bar["high"]) >= trade.target:
+            elif bars.high[r] >= trade.target:
                 exit_price, exit_reason = trade.target, "Cham muc tieu"
-            else:
-                held = len(frame.loc[trade.entry_time:today])
-                if held >= max_hold_days:
-                    exit_price, exit_reason = float(bar["close"]), "Het rao chan doc"
+            elif r - trade.entry_row + 1 >= max_hold_days:
+                exit_price, exit_reason = float(bars.close[r]), "Het rao chan doc"
 
             if exit_price is not None:
                 if locked:
@@ -165,22 +239,24 @@ def run(
                     _close(trade, exit_price, exit_reason)
 
         # ---------- 2. mo vi the moi tu tin hieu phien TRUOC ----------
-        if i > 0:
+        if first < i <= last_entry_session:
             for signal in by_time.get(calendar[i - 1], []):
                 symbol = str(signal["symbol"]).upper()
-                frame = indexed.get(symbol)
-                if frame is None or today not in frame.index:
+                bars = prices.bars.get(symbol)
+                if bars is None or bars.row[i] < 0:
                     continue
                 if any(t.symbol == symbol for t in open_trades):
                     continue
 
-                bar = frame.loc[today]
-                entry = float(bar["open"])
-                sizing = position_size(cash, entry, float(signal["stop_loss"]))
+                r = int(bars.row[i])
+                entry = float(bars.open[r])
+                stop_loss = float(signal["stop_loss"])
+                sizing = position_size(cash, entry, stop_loss, risk_per_trade=risk_per_trade,
+                                       max_weight=max_weight)
                 if sizing.shares <= 0:
                     continue
 
-                max_shares = int(float(bar["volume"]) * max_participation // 100 * 100)
+                max_shares = int(bars.volume[r] * max_participation // 100 * 100)
                 shares = min(sizing.shares, max_shares)
                 if shares <= 0:
                     continue
@@ -190,23 +266,23 @@ def run(
                     continue
                 cash -= cost
                 open_trades.append(
-                    Trade(symbol, today, entry, shares, float(signal["stop_loss"]),
-                          float(signal["target"]), entry_session=i)
+                    Trade(symbol, today, entry, shares, stop_loss, float(signal["target"]),
+                          entry_session=i, entry_row=r, last_close=entry)
                 )
 
         # ---------- 3. dinh gia danh muc ----------
-        holdings = 0.0
         for trade in open_trades:
-            frame = indexed.get(trade.symbol)
-            if frame is not None and today in frame.index:
-                holdings += trade.shares * float(frame.loc[today, "close"])
-            else:
-                holdings += trade.shares * trade.entry_price
-        equity_points.append((today, cash + holdings))
+            bars = prices.bars[trade.symbol]
+            if bars.row[i] >= 0:
+                trade.last_close = float(bars.close[bars.row[i]])
+        if close_at_end and i == stop - 1:
+            for trade in list(open_trades):
+                _close(trade, trade.last_close, "Dong vi the cuoi giai doan")
+        holdings = sum(trade.shares * trade.last_close for trade in open_trades)
+        equity_points.append(cash + holdings)
 
-    equity = pd.Series(dict(equity_points)).sort_index()
-    final_equity = equity.iloc[-1] if len(equity) else 0
-    log.info("Backtest: %d lenh dong, von cuoi ky %.0f", len(closed), final_equity)
+    equity = pd.Series(equity_points, index=pd.DatetimeIndex(calendar[first:stop]), dtype=float)
+    log.debug("Backtest: %d lenh dong, von cuoi ky %.0f", len(closed), equity.iloc[-1])
     return BacktestResult(equity, pd.DataFrame(closed), initial_capital)
 
 

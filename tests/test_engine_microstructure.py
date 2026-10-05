@@ -224,3 +224,67 @@ def test_close_at_floor_but_low_below_close_is_not_locked():
     frame = _floor_frame((18_900, 19_000, 18_600, 18_700), (18_700,) * 4)
     result = _run(frame, _signal(frame, stop=19_000, target=30_000))
     assert result.trades.iloc[0]["exit_time"] == frame["time"].iloc[3]
+
+
+# --------------------------------------------- dinh gia, cua so, dong vi the cuoi ky
+def test_missing_bar_is_valued_at_last_close_not_entry_price():
+    """BBB khong co phien ngay 3 (tam ngung giao dich): danh muc phai dinh gia
+    BBB theo gia dong cua gan nhat (120), khong phai gia vao lenh (100)."""
+    days = pd.bdate_range("2024-01-01", periods=5)
+    aaa = pd.DataFrame({"time": days, "open": 50.0, "high": 51.0, "low": 49.0, "close": 50.0,
+                        "volume": _VOLUME})
+    bbb = pd.DataFrame(
+        {
+            "time": days[[0, 1, 2, 4]],
+            "open": [100.0, 100.0, 118.0, 121.0],
+            "high": [101.0, 121.0, 122.0, 122.0],
+            "low": [99.0, 99.0, 117.0, 120.0],
+            "close": [100.0, 120.0, 120.0, 121.0],
+            "volume": _VOLUME,
+        }
+    )
+    signals = pd.DataFrame({"symbol": ["BBB"], "time": [days[0]], "stop_loss": [90.0],
+                            "target": [200.0]})
+    result = run({"AAA": aaa, "BBB": bbb}, signals, initial_capital=100_000_000,
+                 max_hold_days=100)
+    assert result.equity[days[3]] == pytest.approx(result.equity[days[2]])
+
+
+def test_window_limits_equity_and_signals_to_start_end():
+    frame = _frame([(100, 101, 99, 100)] * 30)
+    start, end = frame["time"].iloc[10], frame["time"].iloc[20]
+    signals = pd.DataFrame(
+        {"symbol": ["AAA", "AAA"], "time": [frame["time"].iloc[5], frame["time"].iloc[12]],
+         "stop_loss": [95.0, 95.0], "target": [130.0, 130.0]}
+    )
+    result = _run(frame, signals, start=start, end=end, max_hold_days=3)
+    assert result.equity.index.min() == start
+    assert result.equity.index.max() == frame["time"].iloc[19]
+    assert result.equity.iloc[0] == pytest.approx(100_000_000)
+    assert result.trades["entry_time"].tolist() == [frame["time"].iloc[13]]
+
+
+def test_close_at_end_liquidates_and_skips_unsellable_late_entries():
+    frame = _frame([(100, 101, 99, 100)] * 12)
+    signals = pd.DataFrame(
+        {"symbol": ["AAA", "AAA"], "time": [frame["time"].iloc[2], frame["time"].iloc[9]],
+         "stop_loss": [95.0, 95.0], "target": [130.0, 130.0]}
+    )
+    result = _run(frame, signals, close_at_end=True)
+    # tin hieu phien 9 -> vao phien 10, chua kip T+2 truoc phien cuoi (11): bo qua
+    assert len(result.trades) == 1
+    assert result.trades["reason"].iloc[0] == "Dong vi the cuoi giai doan"
+    assert result.trades["exit_time"].iloc[0] == frame["time"].iloc[11]
+    fee, tax = 0.0025, 0.001
+    shares = result.trades["shares"].iloc[0]
+    expected = 100_000_000 - shares * 100 * (fee / 2) - shares * 100 * (fee / 2 + tax)
+    assert result.equity.iloc[-1] == pytest.approx(expected)
+
+
+def test_fee_rate_override():
+    frame = _frame([(100, 101, 99, 100)] * 3 + [(100, 131, 99, 120)] * 2)
+    signals = _signal(frame, stop=95, target=130)
+    cheap = _run(frame, signals, fee_rate=0.0015).trades["pnl"].iloc[0]
+    costly = _run(frame, signals, fee_rate=0.0035).trades["pnl"].iloc[0]
+    shares = _run(frame, signals).trades["shares"].iloc[0]
+    assert cheap - costly == pytest.approx(shares * (100 + 130) * 0.002 / 2)

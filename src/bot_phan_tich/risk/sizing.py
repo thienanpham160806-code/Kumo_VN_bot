@@ -33,9 +33,10 @@ def position_size(
     max_weight: float | None = None,
     lot_size: int = LOT_SIZE,
 ) -> PositionSize:
-    settings = get_settings()
-    risk_per_trade = risk_per_trade or settings.get("risk.risk_per_trade", 0.01)
-    max_weight = max_weight or settings.get("risk.max_weight_per_symbol", 0.15)
+    if not risk_per_trade or not max_weight:  # chi doc config (parse YAML, cham) khi can
+        settings = get_settings()
+        risk_per_trade = risk_per_trade or settings.get("risk.risk_per_trade", 0.01)
+        max_weight = max_weight or settings.get("risk.max_weight_per_symbol", 0.15)
 
     if entry <= 0 or stop_loss <= 0 or entry <= stop_loss:
         return PositionSize(0, 0.0, 0.0, 0.0, "Diem dung lo khong hop le")

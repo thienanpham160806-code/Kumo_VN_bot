@@ -57,14 +57,15 @@ def settlement_days() -> int:
     return int(get_settings().get("costs.settlement_days", 2))
 
 
-def is_settled(entry_session: int, today_session: int) -> bool:
+def is_settled(entry_session: int, today_session: int, days: int | None = None) -> bool:
     """T+N tinh theo PHIEN GIAO DICH (chi so trong lich giao dich), khong theo
     ngay trong tuan: mua o phien `entry_session` thi ban duoc tu phien
     entry_session + N. Dem theo ngay trong tuan se sai quanh nghi le (Tet nghi
     ca tuan -> "T+2" theo ngay lam viec roi vao ky nghi, phien mo lai dau tien
     chi la T+1 theo phien). Dung trong backtest/engine.py.
     """
-    return today_session - entry_session >= settlement_days()
+    days = settlement_days() if days is None else days
+    return today_session - entry_session >= days
 
 
 def is_sellable(state: PortfolioState, symbol: str, today: date) -> tuple[bool, str]:
