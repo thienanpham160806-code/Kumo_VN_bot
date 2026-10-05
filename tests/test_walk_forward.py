@@ -133,3 +133,32 @@ def test_sharpe_report_uses_grid_size_as_n_trials():
     assert report["dsr"] == pytest.approx(metrics.deflated_sharpe(
         report["sr"], 3, report["n_obs"], expected_var, report["skew"], report["kurtosis"]))
     assert 0.0 <= report["dsr"] <= report["psr"] <= 1.0
+
+
+def test_universe_is_chosen_point_in_time_per_window():
+    """universe_fn duoc goi voi as_of TRUOC moi cua so; ma ngoai vu tru luc do
+    khong duoc giao dich du co tin hieu."""
+    aaa = _uptrend("2022-01-03", "2023-07-03", seed=1)
+    bbb = _uptrend("2022-01-03", "2023-07-03", seed=2)
+    start, stop = pd.Timestamp("2022-01-03"), pd.Timestamp("2024-01-01")
+    signals = pd.concat([_signals_every(aaa, 5, start, stop),
+                         _signals_every(bbb, 5, start, stop).assign(symbol="BBB")])
+    calls = []
+
+    def universe_fn(as_of):
+        calls.append(as_of)
+        return frozenset({"AAA"}) if as_of < pd.Timestamp("2022-12-31") else frozenset({"BBB"})
+
+    result = walk_forward({"AAA": aaa, "BBB": bbb}, lambda p: signals, grid=(_A,),
+                          train_months=6, test_months=3,
+                          exchanges={"AAA": "HOSE", "BBB": "HOSE"}, universe_fn=universe_fn)
+
+    for _, row in result.slices.iterrows():
+        assert pd.Timestamp(row["test_start"]) - pd.Timedelta(days=1) in calls
+    trades = result.trades.assign(entry_time=pd.to_datetime(result.trades["entry_time"]))
+    early = trades[trades["entry_time"] < pd.Timestamp("2023-01-01")]
+    late = trades[trades["entry_time"] >= pd.Timestamp("2023-01-03")]
+    assert set(early["symbol"]) == {"AAA"}
+    assert set(late["symbol"]) == {"BBB"}
+    assert all(as_of < pd.Timestamp(row) for as_of, row in zip(
+        calls[1::2], result.slices["test_start"], strict=True))

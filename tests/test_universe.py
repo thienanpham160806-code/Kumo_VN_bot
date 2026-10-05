@@ -74,3 +74,56 @@ def test_liquid_universe_use_watchlist_bypasses_store(isolated_store, monkeypatc
         universe, "get_universe_config", lambda: {"watchlist": ["fpt", "vnm"]}
     )
     assert universe.liquid_universe(use_watchlist=True) == ["FPT", "VNM"]
+
+
+# ------------------------------------------------ vu tru theo thoi diem (backtest)
+def _rows_between(symbol, start, end, price, volume) -> list[list]:
+    dates = pd.bdate_range(start, end)
+    return [
+        [symbol, d.strftime("%Y-%m-%d"), price, price * 1.01, price * 0.99, price, volume]
+        for d in dates
+    ]
+
+
+def _seed(rows, symbols):
+    market_store.save_ohlcv(pd.DataFrame(rows, columns=market_store.OHLCV_COLUMNS), merge=False)
+    market_store.save_symbols(
+        pd.DataFrame({"symbol": symbols, "exchange": ["HOSE"] * len(symbols)})
+    )
+
+
+def test_symbol_that_stopped_trading_is_not_in_later_universe(isolated_store):
+    """STALE thanh khoan tot den 07/2024 roi ngung giao dich (huy niem yet).
+    Vu tru thang 01/2026 khong duoc chua no chi vi 20 phien cuoi (nam 2024) dep."""
+    rows = _rows_between("ALIVE", "2023-01-02", "2026-01-30", 20_000, 300_000)
+    rows += _rows_between("STALE", "2023-01-02", "2024-07-31", 20_000, 900_000)
+    _seed(rows, ["ALIVE", "STALE"])
+
+    assert universe.liquid_universe(as_of=pd.Timestamp("2024-06-03").date()) == ["ALIVE", "STALE"]
+    assert universe.liquid_universe(as_of=pd.Timestamp("2026-01-15").date()) == ["ALIVE"]
+
+
+def test_universe_as_of_uses_only_data_up_to_that_date(isolated_store):
+    """RISER khong thanh khoan nam 2023, rat thanh khoan tu 2025: vu tru tai
+    2024-01 khong co RISER du hom nay no dat moi dieu kien."""
+    rows = _rows_between("BASE", "2022-01-03", "2026-01-30", 20_000, 300_000)
+    rows += _rows_between("RISER", "2022-01-03", "2024-12-31", 20_000, 5_000)
+    rows += _rows_between("RISER", "2025-01-01", "2026-01-30", 20_000, 2_000_000)
+    _seed(rows, ["BASE", "RISER"])
+
+    assert universe.liquid_universe(as_of=pd.Timestamp("2024-01-02").date()) == ["BASE"]
+    assert set(universe.liquid_universe(as_of=pd.Timestamp("2026-01-30").date())) == {
+        "BASE", "RISER"}
+
+
+def test_min_days_override_and_preloaded_frame(isolated_store):
+    """Backtest truyen san du lieu (khong doc lai kho) va ha nguong so phien
+    toi thieu xuong muc khoi dong chi bao (kho khong biet ngay niem yet that)."""
+    rows = _rows_between("NEW", "2023-01-02", "2023-06-30", 20_000, 300_000)  # ~130 phien
+    frame = pd.DataFrame(rows, columns=market_store.OHLCV_COLUMNS)
+    frame["time"] = pd.to_datetime(frame["time"])
+    market_store.save_symbols(pd.DataFrame({"symbol": ["NEW"], "exchange": ["HOSE"]}))
+
+    as_of = pd.Timestamp("2023-06-30").date()
+    assert universe.liquid_universe(as_of=as_of, ohlcv=frame) == []
+    assert universe.liquid_universe(as_of=as_of, ohlcv=frame, min_days=60) == ["NEW"]

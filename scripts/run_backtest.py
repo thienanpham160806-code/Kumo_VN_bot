@@ -28,6 +28,7 @@ import argparse
 import sys
 import time
 from datetime import date, timedelta
+from functools import cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -71,12 +72,37 @@ def _default_params() -> StrategyParams:
     )
 
 
-def _run_walk_forward(prices, cache: SignalCache, train_months: int, test_months: int) -> None:
-    log.info("Walk-forward: luoi %d bo tham so, train %d thang / test %d thang",
-             len(DEFAULT_GRID), train_months, test_months)
+def _universe_fn(watchlist: list[str] | None):
+    """as_of -> tap ma du thanh khoan TAI as_of (chi du lieu <= as_of)."""
+    if watchlist:
+        return lambda as_of: frozenset(watchlist)
+    ohlcv = market_store.load_ohlcv(columns=["symbol", "time", "close", "volume"])
+
+    @cache
+    def universe_at(as_of: pd.Timestamp) -> frozenset[str]:
+        return frozenset(liquid_universe(as_of.date(), ohlcv=ohlcv, min_days=_MIN_BARS))
+
+    return universe_at
+
+
+def _default_start(frames: dict[str, pd.DataFrame]) -> pd.Timestamp:
+    """Ngay dau tien ma it nhat mot nua so ma da co du lieu, cong _MIN_BARS
+    phien khoi dong chi bao. Lich cua kho bat dau tu 2016 chi vi mot vai ma
+    co lich su dai - kiem dinh tu do la kiem dinh tren vai ma le."""
+    counts = pd.concat([f["time"] for f in frames.values()]).value_counts().sort_index()
+    broad = counts.index[counts >= counts.max() * 0.5]
+    sessions = counts.index[counts.index >= broad[0]]
+    return sessions[min(_MIN_BARS, len(sessions) - 1)]
+
+
+def _run_walk_forward(prices, cache: SignalCache, universe_fn, start: pd.Timestamp,
+                      train_months: int, test_months: int) -> None:
+    log.info("Walk-forward tu %s: luoi %d bo tham so, train %d thang / test %d thang",
+             start.date(), len(DEFAULT_GRID), train_months, test_months)
     started = time.time()
     result = walk_forward(prices, cache, train_months=train_months, test_months=test_months,
-                          initial_capital=_INITIAL_CAPITAL)
+                          start=start, initial_capital=_INITIAL_CAPITAL,
+                          universe_fn=universe_fn)
     log.info("Walk-forward xong trong %.0fs", time.time() - started)
     if result.slices.empty:
         print("Walk-forward: lich su qua ngan cho mot lat train + test.")
@@ -88,8 +114,8 @@ def _run_walk_forward(prices, cache: SignalCache, train_months: int, test_months
     result.equity.rename("equity").to_csv(_WF_DIR / "walk_forward_equity.csv",
                                           encoding="utf-8-sig")
 
-    cols = ["test_start", "test_end", "buy_threshold", "ichimoku_preset", "max_hold_days",
-            "Sharpe train", "Ti suat sinh loi tich luy", "Ti so Sharpe", "So lenh"]
+    cols = ["test_start", "test_end", "So ma vu tru", "buy_threshold", "ichimoku_preset",
+            "max_hold_days", "Sharpe train", "Ti suat sinh loi tich luy", "Ti so Sharpe", "So lenh"]
     print("\n=== Walk-forward: tham so chon tren train, ket qua tren test ===")
     print(result.slices[cols].to_string(index=False))
     print(f"\n=== Out-of-sample ghep ({len(result.slices)} lat, "
@@ -101,21 +127,11 @@ def _run_walk_forward(prices, cache: SignalCache, train_months: int, test_months
           f"{report['dsr']:.3f}")
 
 
-def _load_universe_frames(symbols: list[str]) -> dict[str, pd.DataFrame]:
+def _load_frames(symbols: list[str] | None) -> dict[str, pd.DataFrame]:
+    """Gia moi ma (None = ca kho) du _MIN_BARS phien. KHONG loc theo thanh khoan
+    hom nay - ma nao giao dich duoc o thoi diem nao do universe_fn quyet dinh."""
     frames = market_store.frames_by_symbol(symbols)
     return {sym: frame for sym, frame in frames.items() if len(frame) >= _MIN_BARS}
-
-
-def _slice_window(
-    frames: dict[str, pd.DataFrame], signals: pd.DataFrame, start: pd.Timestamp
-) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    sliced_frames = {
-        sym: frame.loc[frame["time"] >= start].reset_index(drop=True)
-        for sym, frame in frames.items()
-    }
-    sliced_frames = {sym: f for sym, f in sliced_frames.items() if not f.empty}
-    sliced_signals = signals.loc[signals["time"] >= start].reset_index(drop=True)
-    return sliced_frames, sliced_signals
 
 
 def _benchmark_return(benchmark: str, start: date, end: date) -> float | None:
@@ -142,6 +158,8 @@ def main() -> None:
     )
     parser.add_argument("--train-months", type=int, default=12)
     parser.add_argument("--test-months", type=int, default=3)
+    parser.add_argument("--start", default=None,
+                        help="Ngay bat dau walk-forward (mac dinh: tu dong, xem _default_start)")
     args = parser.parse_args()
 
     setup_logging()
@@ -149,21 +167,15 @@ def main() -> None:
 
     universe_config = get_universe_config()
     benchmark = universe_config.get("benchmark", "VNINDEX")
-    symbols = (
-        [s.upper() for s in universe_config["watchlist"]]
-        if args.watchlist_only
-        else liquid_universe()
+    watchlist = (
+        [s.upper() for s in universe_config["watchlist"]] if args.watchlist_only else None
     )
-    if not symbols:
-        print("Vu tru rong - chay scripts/backfill_data.py truoc.")
-        return
-
-    log.info("Nap gia tu kho cho %d ma...", len(symbols))
-    frames = _load_universe_frames(symbols)
+    frames = _load_frames(watchlist)
     if not frames:
         print("Khong co ma nao du du lieu trong kho - chay scripts/backfill_data.py truoc.")
         return
-    log.info("%d/%d ma du du lieu (>= %d phien)", len(frames), len(symbols), _MIN_BARS)
+    log.info("%d ma du du lieu (>= %d phien)", len(frames), _MIN_BARS)
+    universe_fn = _universe_fn(watchlist)
 
     log.info("Sinh tin hieu MUA tren toan bo lich su co san...")
     started = time.time()
@@ -175,7 +187,8 @@ def main() -> None:
     )
 
     prices = prepare_prices(frames)
-    _run_walk_forward(prices, cache, args.train_months, args.test_months)
+    start = pd.Timestamp(args.start) if args.start else _default_start(frames)
+    _run_walk_forward(prices, cache, universe_fn, start, args.train_months, args.test_months)
 
     today = date.today()
     rows = []
@@ -183,10 +196,11 @@ def main() -> None:
 
     for label, days in _WINDOWS:
         window_start = pd.Timestamp(today - timedelta(days=days))
-        window_frames, window_signals = _slice_window(frames, signals, window_start)
+        universe = universe_fn(window_start - pd.Timedelta(days=1))
+        window_signals = signals[signals["symbol"].isin(universe)]
 
-        result = run_engine(window_frames, window_signals, initial_capital=_INITIAL_CAPITAL,
-                            max_hold_days=_default_params().max_hold_days)
+        result = run_engine(prices, window_signals, initial_capital=_INITIAL_CAPITAL,
+                            max_hold_days=_default_params().max_hold_days, start=window_start)
         final_equity = float(result.equity.iloc[-1]) if len(result.equity) else _INITIAL_CAPITAL
         strategy_return = final_equity / _INITIAL_CAPITAL - 1
 

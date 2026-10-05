@@ -12,6 +12,9 @@ Moi lat:
   2. Ap bo tham so do len cua so test, von dau lat = von cuoi lat truoc.
   3. Chi so cua lat tinh tren DUNG duong von cua lat (engine.run(start, end)),
      khong phai tren ca lich.
+  4. Vu tru co phieu chon THEO THOI DIEM: universe_fn(as_of) voi as_of = ngay
+     truoc khi cua so (train hoac test) bat dau - chi dung du lieu den do, ma
+     chua du thanh khoan luc do khong duoc giao dich du hom nay thanh khoan.
 Duong von out-of-sample ghep tu cac doan test - day la con so duy nhat duoc
 bao cao nhu ket qua chien luoc. `trials` giu Sharpe train cua moi (lat, bo
 tham so) va n_trials = so bo tham so da thu, dung cho Deflated Sharpe
@@ -128,9 +131,17 @@ class WalkForwardResult:
         }
 
 
-def _window(signals: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+def _window(
+    signals: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    universe: frozenset[str] | None = None,
+) -> pd.DataFrame:
     times = pd.to_datetime(signals["time"])
-    return signals[(times >= start) & (times < end)]
+    mask = (times >= start) & (times < end)
+    if universe is not None:
+        mask &= signals["symbol"].astype(str).str.upper().isin(universe)
+    return signals[mask]
 
 
 def _sharpe(equity: pd.Series) -> float:
@@ -148,13 +159,15 @@ def walk_forward(
     initial_capital: float = 100_000_000,
     fee_rate: float | None = None,
     exchanges: dict[str, str] | None = None,
+    universe_fn: Callable[[pd.Timestamp], frozenset[str]] | None = None,
 ) -> WalkForwardResult:
     """Walk-forward cuon: train `train_months`, test `test_months`, buoc = test.
 
     `signals_for(params)` tra ve tin hieu MUA tren TOAN BO lich su cho bo tham
     so do (vd SignalCache) - tin hieu tai t chi dung du lieu <= t nen cat theo
     cua so la hop le. `start`/`end`: gioi han khoang kiem dinh (mac dinh: toan
-    bo lich giao dich).
+    bo lich giao dich). `universe_fn(as_of)`: tap ma duoc phep giao dich, tinh
+    chi bang du lieu <= as_of; None = moi ma co tin hieu.
     """
     prices = (
         price_frames if isinstance(price_frames, PreparedPrices)
@@ -182,11 +195,14 @@ def walk_forward(
         if train_end >= end or test_sessions < _MIN_TEST_SESSIONS:
             break
 
+        train_universe = _universe_before(universe_fn, train_start)
+        test_universe = _universe_before(universe_fn, train_end)
+
         # ---- 1. chon tham so CHI tren cua so train ----
         best, best_sharpe = None, float("-inf")
         for params in grid:
             result = run(
-                prices, _window(signals_for(params), train_start, train_end),
+                prices, _window(signals_for(params), train_start, train_end, train_universe),
                 initial_capital=initial_capital, max_hold_days=params.max_hold_days,
                 fee_rate=fee_rate, start=train_start, end=train_end, close_at_end=True,
             )
@@ -201,7 +217,7 @@ def walk_forward(
 
         # ---- 2. ap nguyen tham so len cua so test ----
         result = run(
-            prices, _window(signals_for(best), train_end, test_end),
+            prices, _window(signals_for(best), train_end, test_end, test_universe),
             initial_capital=capital, max_hold_days=best.max_hold_days, fee_rate=fee_rate,
             start=train_end, end=test_end, close_at_end=True,
         )
@@ -213,7 +229,9 @@ def walk_forward(
         stats = metrics.summarise(result.equity, result.trades)
         slice_rows.append(
             {"train_start": train_start.date(), "test_start": train_end.date(),
-             "test_end": test_end.date(), "So phien": len(result.equity), **asdict(best),
+             "test_end": test_end.date(), "So phien": len(result.equity),
+             "So ma vu tru": len(test_universe) if test_universe is not None else None,
+             **asdict(best),
              "Sharpe train": best_sharpe, **stats}
         )
         log.info(
@@ -234,6 +252,16 @@ def walk_forward(
         trials=pd.DataFrame(trial_rows),
         grid=grid,
     )
+
+
+def _universe_before(
+    universe_fn: Callable[[pd.Timestamp], frozenset[str]] | None, window_start: pd.Timestamp
+) -> frozenset[str] | None:
+    """Vu tru cho cua so bat dau tai `window_start`: as_of = ngay truoc do, de
+    du lieu cua chinh phien dau cua so cung chua duoc dung."""
+    if universe_fn is None:
+        return None
+    return frozenset(s.upper() for s in universe_fn(window_start - pd.Timedelta(days=1)))
 
 
 def compare_benchmarks(
