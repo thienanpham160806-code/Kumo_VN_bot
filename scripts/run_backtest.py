@@ -12,6 +12,12 @@ khong bi meo vi thieu du lieu khoi dong chi bao.
 Xuat: outputs/backtest_3m.csv, outputs/backtest_6m.csv (danh sach lenh da
 dong), outputs/equity_curve.png (duong von hai khung, so voi VN-Index).
 
+Walk-forward (backtest/walk_forward.py): toi uu luoi tham so tren 12 thang
+train, ap len 3 thang test ke tiep, lan cua so; xuat
+outputs/backtest/walk_forward_slices.csv (tham so chon + chi so tung lat),
+walk_forward_trials.csv (Sharpe train moi bo tham so) va
+walk_forward_equity.csv (duong von out-of-sample ghep).
+
 Cach chay:
     python scripts/run_backtest.py                    # toan bo vu tru thanh khoan
     python scripts/run_backtest.py --watchlist-only    # nhanh, vai ma trong universe.yaml
@@ -32,9 +38,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from bot_phan_tich.backtest import metrics  # noqa: E402
+from bot_phan_tich.backtest.engine import prepare_prices  # noqa: E402
 from bot_phan_tich.backtest.engine import run as run_engine  # noqa: E402
-from bot_phan_tich.backtest.signals import generate_signals_for_universe  # noqa: E402
-from bot_phan_tich.config import get_universe_config  # noqa: E402
+from bot_phan_tich.backtest.walk_forward import (  # noqa: E402
+    DEFAULT_GRID,
+    SignalCache,
+    StrategyParams,
+    walk_forward,
+)
+from bot_phan_tich.config import get_settings, get_universe_config  # noqa: E402
 from bot_phan_tich.data import market_store  # noqa: E402
 from bot_phan_tich.data.router import get_router  # noqa: E402
 from bot_phan_tich.data.universe import liquid_universe  # noqa: E402
@@ -46,6 +59,42 @@ _OUTPUTS_DIR = Path("outputs")
 _MIN_BARS = 60
 _INITIAL_CAPITAL = 100_000_000.0
 _WINDOWS = [("3m", 90), ("6m", 180)]
+_WF_DIR = _OUTPUTS_DIR / "backtest"
+
+
+def _default_params() -> StrategyParams:
+    settings = get_settings()
+    return StrategyParams(
+        buy_threshold=settings.get("scoring.thresholds.buy", 60),
+        ichimoku_preset=settings.get("indicators.ichimoku_preset", "goc_nhat_6ngay"),
+        max_hold_days=20,
+    )
+
+
+def _run_walk_forward(prices, cache: SignalCache, train_months: int, test_months: int) -> None:
+    log.info("Walk-forward: luoi %d bo tham so, train %d thang / test %d thang",
+             len(DEFAULT_GRID), train_months, test_months)
+    started = time.time()
+    result = walk_forward(prices, cache, train_months=train_months, test_months=test_months,
+                          initial_capital=_INITIAL_CAPITAL)
+    log.info("Walk-forward xong trong %.0fs", time.time() - started)
+    if result.slices.empty:
+        print("Walk-forward: lich su qua ngan cho mot lat train + test.")
+        return
+
+    _WF_DIR.mkdir(parents=True, exist_ok=True)
+    result.slices.to_csv(_WF_DIR / "walk_forward_slices.csv", index=False, encoding="utf-8-sig")
+    result.trials.to_csv(_WF_DIR / "walk_forward_trials.csv", index=False, encoding="utf-8-sig")
+    result.equity.rename("equity").to_csv(_WF_DIR / "walk_forward_equity.csv",
+                                          encoding="utf-8-sig")
+
+    cols = ["test_start", "test_end", "buy_threshold", "ichimoku_preset", "max_hold_days",
+            "Sharpe train", "Ti suat sinh loi tich luy", "Ti so Sharpe", "So lenh"]
+    print("\n=== Walk-forward: tham so chon tren train, ket qua tren test ===")
+    print(result.slices[cols].to_string(index=False))
+    print(f"\n=== Out-of-sample ghep ({len(result.slices)} lat, "
+          f"{result.n_trials} bo tham so da thu) ===")
+    print(metrics.format_report(metrics.summarise(result.equity, result.trades)))
 
 
 def _load_universe_frames(symbols: list[str]) -> dict[str, pd.DataFrame]:
@@ -87,6 +136,8 @@ def main() -> None:
         "--watchlist-only", action="store_true",
         help="Chi dung vai ma trong config/universe.yaml (phat trien, chay nhanh)",
     )
+    parser.add_argument("--train-months", type=int, default=12)
+    parser.add_argument("--test-months", type=int, default=3)
     args = parser.parse_args()
 
     setup_logging()
@@ -110,13 +161,17 @@ def main() -> None:
         return
     log.info("%d/%d ma du du lieu (>= %d phien)", len(frames), len(symbols), _MIN_BARS)
 
-    log.info("Sinh tin hieu MUA tren toan bo lich su co san (co the mat vai phut)...")
+    log.info("Sinh tin hieu MUA tren toan bo lich su co san...")
     started = time.time()
-    signals = generate_signals_for_universe(frames)
+    cache = SignalCache(frames)
+    signals = cache(_default_params())
     elapsed_signals = time.time() - started
     log.info(
         "Sinh xong %d tin hieu tu %d ma trong %.1fs", len(signals), len(frames), elapsed_signals
     )
+
+    prices = prepare_prices(frames)
+    _run_walk_forward(prices, cache, args.train_months, args.test_months)
 
     today = date.today()
     rows = []
@@ -126,7 +181,8 @@ def main() -> None:
         window_start = pd.Timestamp(today - timedelta(days=days))
         window_frames, window_signals = _slice_window(frames, signals, window_start)
 
-        result = run_engine(window_frames, window_signals, initial_capital=_INITIAL_CAPITAL)
+        result = run_engine(window_frames, window_signals, initial_capital=_INITIAL_CAPITAL,
+                            max_hold_days=_default_params().max_hold_days)
         final_equity = float(result.equity.iloc[-1]) if len(result.equity) else _INITIAL_CAPITAL
         strategy_return = final_equity / _INITIAL_CAPITAL - 1
 
