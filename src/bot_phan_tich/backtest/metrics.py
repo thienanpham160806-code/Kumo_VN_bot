@@ -38,6 +38,33 @@ def sharpe(
     return float(excess.mean() / excess.std(ddof=0) * np.sqrt(periods_per_year))
 
 
+def sortino(
+    returns: pd.Series, risk_free: float = 0.0, periods_per_year: int = TRADING_DAYS
+) -> float:
+    """Nhu Sharpe nhung mau so chi tinh bien dong GIAM: downside deviation =
+    sqrt(mean(min(r - rf, 0)^2)) tren MOI ky (ky tang dong gop 0)."""
+    if returns.empty:
+        return 0.0
+    excess = returns - risk_free / periods_per_year
+    downside = np.sqrt((np.minimum(excess, 0.0) ** 2).mean())
+    if downside == 0:
+        return 0.0
+    return float(excess.mean() / downside * np.sqrt(periods_per_year))
+
+
+def turnover(trades: pd.DataFrame, equity: pd.Series,
+             periods_per_year: int = TRADING_DAYS) -> float:
+    """Vong quay mot chieu theo nam: (tong gia tri mua + tong gia tri ban) / 2,
+    chia von binh quan, chia so nam. 5.0 = moi nam giao dich luong hang gap 5
+    lan von."""
+    needed = {"entry", "exit", "shares"}
+    if trades.empty or not needed.issubset(trades.columns) or len(equity) < 2:
+        return 0.0
+    traded = (trades["entry"] * trades["shares"]).sum() + (trades["exit"] * trades["shares"]).sum()
+    years = len(equity) / periods_per_year
+    return float(traded / 2 / equity.mean() / years)
+
+
 _EULER_GAMMA = 0.5772156649015329
 
 
@@ -153,6 +180,8 @@ def summarise(equity: pd.Series, trades: pd.DataFrame) -> dict:
         "CAGR": cagr(equity),
         "Sut giam toi da": max_drawdown(equity),
         "Ti so Sharpe": sharpe(returns),
+        "Ti so Sortino": sortino(returns),
+        "Vong quay (lan/nam)": turnover(trades, equity),
         "He so loi nhuan": profit_factor(trade_returns),
         "Ti le thang": win_rate(trade_returns),
         "Ky vong (boi so R)": expectancy_r(r_values),
@@ -166,7 +195,7 @@ def format_report(stats: dict) -> str:
         if isinstance(value, float):
             if key in {"So lenh"}:
                 lines.append(f"{key}: {int(value)}")
-            elif "R)" in key or "He so" in key or "Sharpe" in key:
+            elif any(tag in key for tag in ("R)", "He so", "Sharpe", "Sortino", "Vong quay")):
                 lines.append(f"{key}: {value:.2f}")
             else:
                 lines.append(f"{key}: {value:.2%}")

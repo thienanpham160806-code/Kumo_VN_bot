@@ -47,7 +47,7 @@ class StrategyParams:
     max_hold_days: int
 
     def label(self) -> str:
-        return f"MUA>={self.buy_threshold:g} | {self.ichimoku_preset} | giu<={self.max_hold_days}"
+        return f"MUA>={self.buy_threshold:g}, {self.ichimoku_preset}, giu<={self.max_hold_days}"
 
 
 DEFAULT_GRID: tuple[StrategyParams, ...] = tuple(
