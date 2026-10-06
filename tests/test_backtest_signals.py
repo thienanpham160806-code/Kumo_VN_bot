@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from bot_phan_tich.backtest import metrics
 from bot_phan_tich.backtest.engine import run
@@ -58,3 +59,49 @@ def test_signals_feed_into_backtest_engine_and_produce_valid_report():
     assert not result.equity.empty
     assert "CAGR" in stats
     assert "Sut giam toi da" in stats
+
+
+# ---------------------------------------------- ban vectorized == ban O(n^2) cu
+def _volatile_frame(n: int, seed: int) -> pd.DataFrame:
+    """Gia dao dong manh, co ca xu huong tang/giam xen ke - de sinh nhieu tin
+    hieu MUA (bai test khong duoc "dung" vi khong co tin hieu nao)."""
+    rng = np.random.default_rng(seed)
+    regime = np.repeat(rng.choice([-0.004, 0.0, 0.006], size=n // 40 + 1), 40)[:n]
+    close = 30_000 * np.exp(np.cumsum(rng.normal(regime, 0.02, n)))
+    return pd.DataFrame(
+        {
+            "time": pd.bdate_range("2021-01-04", periods=n),
+            "open": close * (1 + rng.normal(0, 0.005, n)),
+            "high": close * (1 + rng.uniform(0.001, 0.025, n)),
+            "low": close * (1 - rng.uniform(0.001, 0.025, n)),
+            "close": close,
+            "volume": rng.integers(100_000, 2_000_000, n).astype(float),
+        }
+    )
+
+
+@pytest.mark.parametrize("seed", [11, 12, 13])
+@pytest.mark.parametrize("min_gap", [1, 5])
+def test_vectorized_signals_match_reference_100_percent(seed, min_gap):
+    from bot_phan_tich.backtest.signals import generate_buy_signals_reference
+
+    frame = _volatile_frame(320, seed)
+    new = generate_buy_signals(frame, "AAA", min_gap=min_gap)
+    old = generate_buy_signals_reference(frame, "AAA", min_gap=min_gap)
+
+    assert len(old) > 0, "du lieu gia phai sinh duoc tin hieu de phep so sanh co y nghia"
+    assert new["time"].tolist() == old["time"].tolist()
+    assert (new["symbol"] == old["symbol"]).all()
+    np.testing.assert_allclose(new["stop_loss"], old["stop_loss"], rtol=1e-12)
+    np.testing.assert_allclose(new["target"], old["target"], rtol=1e-12)
+
+
+def test_vectorized_signals_are_fast_on_three_years():
+    """3 nam (~750 phien) mot ma: ban cu mat ~11 giay; ban moi phai < 2 giay
+    (nguong rong de khong chap chon tren may CI cham)."""
+    import time
+
+    frame = _volatile_frame(750, seed=21)
+    started = time.perf_counter()
+    generate_buy_signals(frame, "AAA")
+    assert time.perf_counter() - started < 2.0

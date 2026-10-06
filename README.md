@@ -1,5 +1,43 @@
 # bot-phan-tich
 
+![CI](https://github.com/thienanpham160806-code/bot-phan-tich/actions/workflows/ci.yml/badge.svg)
+
+## Overview (English)
+
+A Telegram bot and research stack for Vietnamese equities (HOSE/HNX/UPCOM).
+Daily OHLCV for ~1,500 symbols lives in one parquet store; `analysis/scoring.py`
+combines MACD, adaptive-threshold RSI and Ichimoku (with a below-cloud veto)
+into a score in [−100, 100]. `analysis/score_history.py` computes that score
+for every bar in one pass, matching the bar-by-bar reference exactly and
+running ~125–150× faster ([benchmark](docs/benchmark.md)).
+
+**Backtest methodology.** Signals at the close of t fill at the open of t+1;
+shares settle T+2 (counted in trading sessions); exits that gap through the
+stop or target fill at the open; sells on limit-down-locked sessions
+(per-exchange price bands) are deferred; 0.25% round-trip fees plus 0.1% sales
+tax. The universe is selected point-in-time. Parameters are chosen by
+walk-forward (12-month train, 3-month test, 12 combinations by Sharpe), and
+the stitched out-of-sample curve is evaluated with the Probabilistic and
+Deflated Sharpe Ratios (Bailey & López de Prado, 2014).
+
+**Result: no edge on this sample.** All figures are after costs, Nov 2023 – Sep 2026, from
+[`outputs/backtest/report.md`](outputs/backtest/report.md):
+
+| | Return | CAGR | Sharpe | Max DD | PSR | DSR |
+|---|---:|---:|---:|---:|---:|---:|
+| Walk-forward out-of-sample (Nov 2024 →) | −33.4% | −19.9% | −1.39 | −44.3% | 0.023 | 0.002 |
+| VN-Index buy & hold, same window | +44.1% | +22.1% | 1.09 | −18.1% | 0.923 | – |
+| Default parameters, full period | −42.6% | −17.8% | −1.21 | −47.7% | 0.016 | 0.001 |
+| VN-Index buy & hold, full period | +60.0% | +18.1% | 1.01 | −18.1% | 0.949 | – |
+
+All 12 parameter combinations lose money. Cross-sectional rank IC of the total
+score is +0.023 at 20 days (Newey–West t = 1.72, not significant) and −0.020
+at 1 day (t = −4.1, short-term reversal). Fixing T+2, gap fills and limit-down
+handling moved the same signals from −33.7% to −42.6%. Details (in
+Vietnamese): section 5b below and [INTERVIEW_NOTES.md](INTERVIEW_NOTES.md).
+
+---
+
 Telegram Bot phân tích kỹ thuật chứng khoán Việt Nam — hợp lưu ba hệ chỉ báo
 **MACD, RSI (ngưỡng thích ứng), Ichimoku Kinko Hyo** — trên **toàn sàn**
 HOSE/HNX/UPCOM (không chỉ vài mã theo dõi mẫu).
@@ -115,8 +153,13 @@ nên bot vẫn chạy được đầy đủ phần dữ liệu cuối phiên. Xe
    không cần cài riêng — xem `data/dnse.py`).
 
 Cấu hình Vietcap (nguồn dự phòng, **không cần API key**): qua thư viện
-`vnstock` — `pip install -U vnstock` (đã có trong `requirements.txt`), chạy
-`register_user()` một lần, đặt `VNSTOCK_ACCEPT_TOS=1` trong `.env`.
+`vnstock`, chạy `register_user()` một lần, đặt `VNSTOCK_ACCEPT_TOS=1` trong
+`.env`. **vnstock là phụ thuộc tuỳ chọn**: từ 25/09/2026 gói bị PyPI cách ly
+nên không còn trong `requirements.txt`. Cài riêng khi tải được:
+`pip install ".[vnstock]"` (hoặc `pip install "vnstock>=4.0"`). Thiếu vnstock,
+bot vẫn chạy: giá lấy từ kho local, endpoint công khai Vietcap và DNSE; các
+lệnh cần báo cáo tài chính/ngành/tin công bố trả lời "chưa có dữ liệu" thay vì
+lỗi (`tests/test_optional_vnstock.py`).
 
 > Lỡ commit lộ `DNSE_API_KEY`/`DNSE_API_SECRET` lên Git: vào EntradeX **tạo
 > khoá mới ngay** (khoá cũ coi như đã lộ) rồi mới dọn lịch sử commit — đổi
@@ -139,9 +182,15 @@ Tuỳ chọn thêm (không bắt buộc để bot chạy được):
 # lọc pe=/roe= trong /loc. Cache 7 ngày, tự bỏ qua nếu chạy lại quá sớm.
 python scripts/backfill_fundamentals.py
 
-# Backtest chiến lược 3 và 6 tháng gần nhất, so với mua-và-giữ VN-Index.
-# Xuất outputs/backtest_3m.csv, backtest_6m.csv, outputs/equity_curve.png.
+# Backtest đầy đủ (walk-forward, PSR/DSR, độ nhạy chi phí) + khung 3/6 tháng
+# gần nhất, so với mua-và-giữ VN-Index -> outputs/backtest/ (mục 5b), ~5 phút.
 python scripts/run_backtest.py
+
+# Đo tốc độ sinh tín hiệu: bản cũ O(n^2) so với bản vectorized -> docs/benchmark.md.
+python scripts/bench_signals.py
+
+# Phân tích IC của điểm MACD/RSI/Ichimoku/tổng (mục 5b) -> outputs/ic/.
+python scripts/ic_analysis.py
 ```
 
 Kiểm thử: `pytest -q`. Chất lượng mã: `ruff check src tests scripts`.
@@ -216,6 +265,120 @@ nhiêu — xem `analysis/scoring.py`.
 Các hàm nặng (tra cứu, khuyến nghị, vẽ biểu đồ, text mining BCTC, quét
 watchlist) chạy qua `await asyncio.to_thread(...)` trong handler, nên `/help`
 vẫn trả lời ngay khi đang có lệnh nặng khác (xem `tests/test_nonblocking.py`).
+
+---
+
+## 5b. Kiểm định định lượng
+
+### Phân tích Information Coefficient (IC)
+
+`python scripts/ic_analysis.py` (module `backtest/ic.py`). Mỗi phiên t, trên
+**mặt cắt** các mã trong vũ trụ thanh khoản *tại thời điểm đó* (chọn theo dữ
+liệu đến hết tháng trước), tính tương quan hạng Spearman giữa điểm của từng
+hệ chỉ báo (chỉ dùng dữ liệu đến t) và lợi suất từ **giá mở cửa t+1** đến giá
+mở cửa t+1+h. IC đo xem điểm số có **xếp hạng đúng** mã nào sẽ tăng hơn mã nào
+hay không. Kết quả đầy đủ: `outputs/ic/` (`ic_summary.csv`, `ic_daily.csv`,
+`ic_monthly.csv`, `ic_decay.png`).
+
+Mẫu: 02/01/2024 – 22/09/2026, 675 phiên, trung vị 280 mã/phiên.
+
+| Chỉ báo | h | IC TB | Độ lệch chuẩn | ICIR | t-stat | t-stat Newey-West | Tháng IC > 0 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MACD | 5 | 0,0025 | 0,117 | 0,02 | 0,55 | 0,32 | 58% |
+| MACD | 10 | 0,0152 | 0,111 | 0,14 | 3,54 | 1,72 | 61% |
+| MACD | 20 | 0,0163 | 0,104 | 0,16 | 4,00 | 1,44 | 66% |
+| RSI | 5 | −0,0155 | 0,130 | −0,12 | −3,09 | −1,88 | 33% |
+| RSI | 10 | 0,0050 | 0,124 | 0,04 | 1,04 | 0,52 | 61% |
+| RSI | 20 | 0,0212 | 0,119 | 0,18 | 4,56 | 1,72 | 69% |
+| Ichimoku | 5 | 0,0082 | 0,131 | 0,06 | 1,62 | 0,91 | 64% |
+| Ichimoku | 10 | 0,0160 | 0,124 | 0,13 | 3,34 | 1,42 | 64% |
+| Ichimoku | 20 | 0,0218 | 0,117 | 0,19 | 4,79 | 1,50 | 66% |
+| Điểm tổng | 5 | −0,0010 | 0,133 | −0,01 | −0,19 | −0,11 | 58% |
+| Điểm tổng | 10 | 0,0135 | 0,125 | 0,11 | 2,78 | 1,25 | 61% |
+| Điểm tổng | 20 | 0,0227 | 0,113 | 0,20 | 5,15 | 1,72 | 72% |
+
+![IC decay](outputs/ic/ic_decay.png)
+
+**Diễn giải — kết quả gần như bằng 0, và cần nói thẳng như vậy:**
+
+- **IC rất nhỏ.** Mọi |IC| ≤ 0,023. Không có hệ nào, kể cả điểm tổng, có ý
+  nghĩa thống kê ở mức 5% sau khi hiệu chỉnh: t-stat Newey-West cao nhất là
+  1,72 (< 1,96).
+- **t-stat thường bị thổi phồng.** Với h = 10–20, lợi suất của hai phiên liền
+  nhau dùng chung 9–19 phiên, nên chuỗi IC tự tương quan mạnh. t-stat thường
+  (3,5–5,2, trông "rất có ý nghĩa") cao gấp 2–3 lần t-stat Newey-West (độ trễ =
+  h). Nếu chỉ báo cáo t-stat thường sẽ tự lừa mình.
+- **Đảo chiều ngắn hạn là tín hiệu rõ nhất, và nó ngược chiều chiến lược.** Ở
+  h = 1 phiên IC **âm có ý nghĩa**: RSI −0,038 (t Newey-West −7,7, chỉ 6% số
+  tháng có IC > 0), điểm tổng −0,020 (t −4,1). Mã có điểm cao hôm nay có xu
+  hướng giảm lại trong 1–2 phiên kế tiếp; từ h ≈ 10 phiên IC mới chuyển sang
+  dương, và vẫn yếu. Chiến lược mua ngay giá mở cửa sau ngày điểm cao, với dừng lỗ
+  1,5 ATR, đi đúng vào nhịp điều chỉnh này. Đó là một lời giải thích hợp lý
+  cho kết quả backtest yếu ở mục dưới.
+- **Giới hạn:** chỉ ~2,7 năm dữ liệu (kho giữ ~750 phiên mỗi mã), giá đã điều
+  chỉnh cổ tức, vũ trụ lấy sàn theo danh sách hiện tại. IC đo khả năng *xếp
+  hạng* giữa các mã; chiến lược thật là *định thời điểm* có stop/target, nên
+  hai thước đo bổ sung cho nhau chứ không thay thế nhau.
+
+### Backtest đầy đủ so với VN-Index
+
+`python scripts/run_backtest.py` → `outputs/backtest/` (bảng gốc:
+[`report.md`](outputs/backtest/report.md), sinh tự động, không sửa tay). Toàn
+bộ kho: 1.511 mã, kiểm định từ 14/11/2023 (sau 60 phiên khởi động chỉ báo) đến
+24/09/2026. Vũ trụ chọn theo thời điểm (~290 mã mỗi lát). Phí hai chiều 0,25%
++ thuế bán 0,1%, vốn 100 triệu đồng. Walk-forward: train 12 tháng / test 3
+tháng, lưới 12 tổ hợp. Mọi con số dưới đây đều sau phí và thuế.
+
+| Chiến lược | Giai đoạn | Lợi nhuận | CAGR | Sharpe | Sortino | Sụt giảm tối đa | Vòng quay/năm | Số lệnh | PSR | DSR |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Walk-forward out-of-sample** | 11/2024–09/2026 | −33,4% | −19,9% | −1,39 | −1,66 | −44,3% | 30,1 | 1.435 | 0,023 | 0,002 |
+| VN-Index mua và giữ | 11/2024–09/2026 | +44,1% | +22,1% | 1,09 | 1,50 | −18,1% | – | – | 0,923 | – |
+| Tham số mặc định, cả kỳ | 11/2023–09/2026 | −42,6% | −17,8% | −1,21 | −1,45 | −47,7% | 25,6 | 2.121 | 0,016 | 0,001 |
+| Tốt nhất in-sample (12 tổ hợp) | 11/2023–09/2026 | −31,0% | −12,3% | −0,78 | −0,94 | −38,9% | 27,7 | 2.348 | 0,088 | 0,013 |
+| VN-Index mua và giữ | 11/2023–09/2026 | +60,0% | +18,1% | 1,01 | 1,37 | −18,1% | – | – | 0,949 | – |
+
+Độ nhạy chi phí (phí hai chiều; thuế bán 0,1% giữ nguyên):
+
+| Phí hai chiều | Mặc định cả kỳ: CAGR / Sharpe | Walk-forward OOS: CAGR / Sharpe |
+|---|---|---|
+| 0,15% | −14,9% / −0,98 | −18,2% / −1,25 |
+| 0,25% | −17,8% / −1,21 | −19,9% / −1,39 |
+| 0,35% | −19,4% / −1,34 | −18,0% / −1,24 |
+
+![Đường vốn so với VN-Index](outputs/backtest/equity_vs_vnindex.png)
+
+**Diễn giải:**
+
+- **Chiến lược thua VN-Index rất xa và lỗ tuyệt đối.** Cả **12/12 tổ hợp
+  tham số** đều lỗ trên cả kỳ (CAGR từ −12% đến −27%,
+  [`grid_full_period.csv`](outputs/backtest/grid_full_period.csv)). Đây không
+  phải một bộ tham số kém may mắn; cả họ chiến lược không có lợi thế trên mẫu
+  này, khớp với kết quả IC ≈ 0 ở trên.
+- **PSR/DSR xác nhận điều đó.** Xác suất Sharpe thật > 0 của walk-forward chỉ
+  0,023; sau khi trừ thiên lệch chọn lọc từ 12 lần thử (DSR) còn 0,002. Ngay cả
+  tổ hợp tốt nhất in-sample (Sharpe −0,78) cũng chỉ có DSR 0,013.
+- **Chi phí không phải nguyên nhân chính, nhưng cũng không nhỏ.** Vòng quay
+  25–30 lần vốn mỗi năm (giữ lệnh trung vị 4 phiên). Giảm phí từ 0,35% xuống
+  0,15% chỉ cải thiện CAGR khoảng 4,5 điểm %, vẫn lỗ nặng. Trung bình mỗi lệnh lỗ
+  −0,31% *trước* phí, −0,66% sau phí. Ở cột walk-forward, phí 0,35% có kết quả
+  tốt hơn 0,25% vì mỗi mức phí chọn lại tham số trên train (ra tổ hợp khác),
+  không phải vì phí cao giúp có lời.
+- **Sửa phương pháp làm kết quả xấu đi.** Cùng một bộ tin hiệu, chạy qua
+  engine ở từng commit ([`engine_ablation.csv`](outputs/backtest/engine_ablation.csv),
+  `scripts/engine_ablation.py`): engine gốc −33,7% (717/2.323 lệnh bán ngay
+  ngày làm việc kế tiếp, vi phạm T+2) → thêm T+2 −23,2% → thêm khớp gap ở giá
+  mở cửa −35,9% → thêm kẹt giá sàn −42,6%. T+2 làm kết quả *tốt lên* (bị buộc
+  giữ qua nhịp đảo chiều ngắn hạn, đúng như IC âm ở h = 1–2), còn gap và giá
+  sàn làm xấu đi đáng kể. Con số −33,7% cũ là lạc quan không có cơ sở.
+- Khung 3/6 tháng gần nhất (yêu cầu của đề, `outputs/backtest_3m.csv`,
+  `backtest_6m.csv`) quá ngắn để kết luận gì: +2,2% so với VN-Index −5,1%
+  (3 tháng), −2,0% so với −0,2% (6 tháng).
+
+**Giới hạn đã biết:** ~2,9 năm dữ liệu (một chu kỳ thị trường); VN-Index là chỉ
+số giá (không gồm cổ tức), mua-và-giữ không tính phí; sàn của mã lấy theo danh
+sách hiện tại; mã huỷ niêm yết trước khi dựng kho không có trong kho; quy tắc
+giá sàn khá bảo thủ (cả phiên coi như không bán được dù có thể đã khớp trước khi
+chạm sàn).
 
 ---
 

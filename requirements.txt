@@ -19,7 +19,12 @@ urllib3>=2.0
 certifi
 websockets>=12.0
 msgpack>=1.0
-vnstock>=4.0              # Vietcap/VCI: báo cáo tài chính, danh sách mã, ngành (nguồn dự phòng)
+# vnstock (Vietcap/VCI: báo cáo tài chính, danh sách mã, ngành, công bố thông tin)
+# là phụ thuộc TUỲ CHỌN: từ 25/09/2026 gói bị PyPI cách ly nên không để ở đây
+# (một gói hỏng làm hỏng cả `pip install -r`). Cài riêng khi tải được:
+#     pip install ".[vnstock]"      hoặc      pip install "vnstock>=4.0"
+# Thiếu vnstock: giá (DNSE + endpoint công khai Vietcap + kho local) vẫn chạy;
+# lệnh cần BCTC/ngành/tin công bố trả lời "chưa có dữ liệu" thay vì lỗi.
 httpx>=0.27
 requests>=2.31             # data/vietcap.py: nạp toàn sàn theo lô (endpoint công khai bảng giá)
 psutil>=5.9                # sysinfo.py: đo RAM tiến trình (log dựng snapshot, lệnh /trangthai)

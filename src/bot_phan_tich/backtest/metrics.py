@@ -38,23 +38,119 @@ def sharpe(
     return float(excess.mean() / excess.std(ddof=0) * np.sqrt(periods_per_year))
 
 
-def deflated_sharpe(observed: float, n_trials: int, n_obs: int) -> float:
-    """Sharpe hieu chinh theo so lan thu tham so.
+def sortino(
+    returns: pd.Series, risk_free: float = 0.0, periods_per_year: int = TRADING_DAYS
+) -> float:
+    """Nhu Sharpe nhung mau so chi tinh bien dong GIAM: downside deviation =
+    sqrt(mean(min(r - rf, 0)^2)) tren MOI ky (ky tang dong gop 0)."""
+    if returns.empty:
+        return 0.0
+    excess = returns - risk_free / periods_per_year
+    downside = np.sqrt((np.minimum(excess, 0.0) ** 2).mean())
+    if downside == 0:
+        return 0.0
+    return float(excess.mean() / downside * np.sqrt(periods_per_year))
 
-    Thu 1000 to hop roi bao cao to hop dep nhat la cach de nhat de tu lua. Chi so
-    nay tru bot phan "may man do tim kiem nhieu".
+
+def turnover(trades: pd.DataFrame, equity: pd.Series,
+             periods_per_year: int = TRADING_DAYS) -> float:
+    """Vong quay mot chieu theo nam: (tong gia tri mua + tong gia tri ban) / 2,
+    chia von binh quan, chia so nam. 5.0 = moi nam giao dich luong hang gap 5
+    lan von."""
+    needed = {"entry", "exit", "shares"}
+    if trades.empty or not needed.issubset(trades.columns) or len(equity) < 2:
+        return 0.0
+    traded = (trades["entry"] * trades["shares"]).sum() + (trades["exit"] * trades["shares"]).sum()
+    years = len(equity) / periods_per_year
+    return float(traded / 2 / equity.mean() / years)
+
+
+_EULER_GAMMA = 0.5772156649015329
+
+
+def sharpe_moments(returns: pd.Series) -> dict:
+    """Sharpe THEO KY (khong nhan sqrt(252)) va cac mo-men dung cho PSR/DSR.
+
+    sr = mean / std (ddof=1); skew = do lech; kurtosis = do nhon KHONG tru 3
+    (phan phoi chuan = 3), dung quy uoc cua Bailey & Lopez de Prado (2014).
     """
-    if n_trials <= 1 or n_obs <= 1:
-        return observed
-    euler = 0.5772156649
-    expected_max = (1 - euler) * _z(1 - 1 / n_trials) + euler * _z(1 - 1 / (n_trials * np.e))
-    return float(observed - expected_max / np.sqrt(n_obs))
+    from scipy import stats  # type: ignore
+
+    values = pd.Series(returns, dtype=float).dropna().to_numpy()
+    n_obs = len(values)
+    std = values.std(ddof=1) if n_obs > 1 else 0.0
+    if n_obs < 3 or std == 0:
+        return {"sr": 0.0, "n_obs": n_obs, "skew": 0.0, "kurtosis": 3.0}
+    return {
+        "sr": float(values.mean() / std),
+        "n_obs": n_obs,
+        "skew": float(stats.skew(values)),
+        "kurtosis": float(stats.kurtosis(values, fisher=False)),
+    }
 
 
-def _z(p: float) -> float:
+def probabilistic_sharpe(
+    sr: float, n_obs: int, skew: float = 0.0, kurtosis: float = 3.0, sr_benchmark: float = 0.0
+) -> float:
+    """Probabilistic Sharpe Ratio (Bailey & Lopez de Prado, 2012/2014).
+
+        PSR(SR*) = Phi( (SR - SR*) * sqrt(T - 1) / sqrt(1 - g3*SR + (g4 - 1)/4 * SR^2) )
+
+    SR, SR* la Sharpe THEO KY (vd theo ngay, khong annualize), T = so quan
+    sat, g3 = skewness, g4 = kurtosis (khong tru 3). Tra ve XAC SUAT Sharpe
+    that su lon hon SR*, co tinh den do dai mau va phan phoi lech/duoi day:
+    cung mot SR nhung skew am, duoi day (rui ro sap) thi PSR thap hon.
+    """
     from scipy.stats import norm  # type: ignore
 
-    return float(norm.ppf(min(max(p, 1e-9), 1 - 1e-9)))
+    if n_obs < 2:
+        return float("nan")
+    variance_term = 1.0 - skew * sr + (kurtosis - 1.0) / 4.0 * sr**2
+    if variance_term <= 0:
+        return float("nan")
+    z = (sr - sr_benchmark) * np.sqrt(n_obs - 1) / np.sqrt(variance_term)
+    return float(norm.cdf(z))
+
+
+def expected_max_sharpe(n_trials: int, sr_variance: float) -> float:
+    """Sharpe ky vong LON NHAT trong `n_trials` lan thu khi Sharpe that bang 0:
+
+        SR0 = sqrt(V[SR_n]) * ((1 - gamma) * Phi^-1(1 - 1/N) + gamma * Phi^-1(1 - 1/(N e)))
+
+    gamma = hang so Euler-Mascheroni, V[SR_n] = phuong sai Sharpe (theo ky)
+    giua cac lan thu. Thu cang nhieu, Sharpe "dep nhat" do may man cang cao.
+    """
+    from scipy.stats import norm  # type: ignore
+
+    if n_trials <= 1 or sr_variance <= 0:
+        return 0.0
+    return float(
+        np.sqrt(sr_variance)
+        * (
+            (1 - _EULER_GAMMA) * norm.ppf(1 - 1 / n_trials)
+            + _EULER_GAMMA * norm.ppf(1 - 1 / (n_trials * np.e))
+        )
+    )
+
+
+def deflated_sharpe(
+    observed: float,
+    n_trials: int,
+    n_obs: int,
+    sr_variance: float,
+    skew: float = 0.0,
+    kurtosis: float = 3.0,
+) -> float:
+    """Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014): PSR voi nguong
+    SR* = expected_max_sharpe(n_trials, sr_variance).
+
+    Thu nhieu to hop roi bao cao to hop dep nhat la cach de nhat de tu lua.
+    DSR la XAC SUAT Sharpe that cua chien luoc duoc chon > 0 SAU KHI tru phan
+    "may man do tim kiem nhieu". `observed`: Sharpe theo ky cua chien luoc;
+    `sr_variance`: phuong sai Sharpe theo ky giua `n_trials` lan thu.
+    """
+    threshold = expected_max_sharpe(n_trials, sr_variance)
+    return probabilistic_sharpe(observed, n_obs, skew, kurtosis, sr_benchmark=threshold)
 
 
 def profit_factor(trade_returns: pd.Series) -> float:
@@ -84,6 +180,8 @@ def summarise(equity: pd.Series, trades: pd.DataFrame) -> dict:
         "CAGR": cagr(equity),
         "Sut giam toi da": max_drawdown(equity),
         "Ti so Sharpe": sharpe(returns),
+        "Ti so Sortino": sortino(returns),
+        "Vong quay (lan/nam)": turnover(trades, equity),
         "He so loi nhuan": profit_factor(trade_returns),
         "Ti le thang": win_rate(trade_returns),
         "Ky vong (boi so R)": expectancy_r(r_values),
@@ -97,7 +195,7 @@ def format_report(stats: dict) -> str:
         if isinstance(value, float):
             if key in {"So lenh"}:
                 lines.append(f"{key}: {int(value)}")
-            elif "R)" in key or "He so" in key or "Sharpe" in key:
+            elif any(tag in key for tag in ("R)", "He so", "Sharpe", "Sortino", "Vong quay")):
                 lines.append(f"{key}: {value:.2f}")
             else:
                 lines.append(f"{key}: {value:.2%}")
