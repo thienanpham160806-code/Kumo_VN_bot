@@ -11,6 +11,12 @@ Doi lai, vnstock co gioi han tan suat goi. Vi vay moi ket qua deu di qua cache.
 LUU Y: lan dau dung phai chay register_user() cua vnstock mot lan, sau do
 dat VNSTOCK_ACCEPT_TOS=1 trong .env.
 
+vnstock la phu thuoc TUY CHON (`pip install ".[vnstock]"`): tu 25/09/2026 goi
+nay bi PyPI cach ly nen `pip install -r requirements.txt` khong con keo no ve.
+Moi cho import vnstock deu nam trong ham va bat loi -> thieu vnstock thi cac
+phuong thuc can no nem ProviderError, router chuyen sang nguon khac / cache /
+kho local (gia toan san qua endpoint cong khai ben duoi KHONG can vnstock).
+
 DA XAC NHAN (kiem tra truc tiep tren vnstock 4.0.8, khong con la gia dinh):
   - `Market().equity` va `Fundamental().equity` la HAM, phai GOI voi symbol
     truoc (vd `market.equity(symbol="FPT")`) de lay ve doi tuong co cac
@@ -43,6 +49,7 @@ DA XAC NHAN (kiem tra truc tiep tren vnstock 4.0.8, khong con la gia dinh):
 """
 from __future__ import annotations
 
+import importlib.util
 import random
 import time
 from collections.abc import Callable
@@ -57,6 +64,16 @@ from ..logging_conf import get_logger
 from .base import OHLCV_COLUMNS, FundamentalProvider, PriceProvider, ProviderError
 
 log = get_logger(__name__)
+
+_VNSTOCK_MISSING = (
+    "Chua cai vnstock (phu thuoc tuy chon - goi bi PyPI cach ly). "
+    'Cai khi co the: pip install ".[vnstock]"'
+)
+
+
+def vnstock_available() -> bool:
+    """Co cai vnstock khong (khong import - tranh tac dung phu cua vnai)."""
+    return importlib.util.find_spec("vnstock") is not None
 
 _INDUSTRY_LEVEL = 4  # 1=rong nhat (vd "Tai chinh") .. 4=chi tiet nhat
 
@@ -159,8 +176,10 @@ class VietcapProvider(PriceProvider, FundamentalProvider):
         if self._market is None:
             try:
                 from vnstock import Fundamental, Market, Reference  # type: ignore
-            except ImportError as exc:  # pragma: no cover
-                raise ProviderError("Chua cai vnstock. Chay: pip install -U vnstock") from exc
+            except ImportError as exc:
+                raise ProviderError(_VNSTOCK_MISSING) from exc
+            except (Exception, SystemExit) as exc:  # vnai co the sys.exit() ngay khi import
+                raise ProviderError(f"Khong khoi tao duoc vnstock: {exc}") from exc
             self._market = Market()
             self._reference = Reference()
             self._fundamental = Fundamental()
@@ -290,8 +309,10 @@ class VietcapProvider(PriceProvider, FundamentalProvider):
         """
         try:
             from vnstock.explorer.vci.company import Company as VciCompany  # type: ignore
-        except ImportError as exc:  # pragma: no cover
-            raise ProviderError("Chua co vnstock.explorer.vci (kiem tra ban vnstock)") from exc
+        except ImportError as exc:
+            raise ProviderError(_VNSTOCK_MISSING) from exc
+        except (Exception, SystemExit) as exc:
+            raise ProviderError(f"Khong khoi tao duoc vnstock: {exc}") from exc
 
         frame = self._guard(
             lambda: VciCompany(symbol=symbol.upper()).news(), f"company_news({symbol})"
@@ -375,7 +396,7 @@ def _public_headers() -> dict[str, str]:
         from vnstock.core.utils.user_agent import get_headers  # type: ignore
 
         return get_headers(data_source="VCI")
-    except ImportError:  # pragma: no cover - vnstock luon co san trong requirements
+    except (Exception, SystemExit):  # vnstock la tuy chon (hoac loi khi import vnai)
         return {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

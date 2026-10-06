@@ -115,8 +115,13 @@ nên bot vẫn chạy được đầy đủ phần dữ liệu cuối phiên. Xe
    không cần cài riêng — xem `data/dnse.py`).
 
 Cấu hình Vietcap (nguồn dự phòng, **không cần API key**): qua thư viện
-`vnstock` — `pip install -U vnstock` (đã có trong `requirements.txt`), chạy
-`register_user()` một lần, đặt `VNSTOCK_ACCEPT_TOS=1` trong `.env`.
+`vnstock`, chạy `register_user()` một lần, đặt `VNSTOCK_ACCEPT_TOS=1` trong
+`.env`. **vnstock là phụ thuộc tuỳ chọn**: từ 25/09/2026 gói bị PyPI cách ly
+nên không còn trong `requirements.txt`. Cài riêng khi tải được:
+`pip install ".[vnstock]"` (hoặc `pip install "vnstock>=4.0"`). Thiếu vnstock,
+bot vẫn chạy: giá lấy từ kho local, endpoint công khai Vietcap và DNSE; các
+lệnh cần báo cáo tài chính/ngành/tin công bố trả lời "chưa có dữ liệu" thay vì
+lỗi (`tests/test_optional_vnstock.py`).
 
 > Lỡ commit lộ `DNSE_API_KEY`/`DNSE_API_SECRET` lên Git: vào EntradeX **tạo
 > khoá mới ngay** (khoá cũ coi như đã lộ) rồi mới dọn lịch sử commit — đổi
