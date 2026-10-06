@@ -522,7 +522,8 @@ def screener_results_card(
             "• Tiêu chí lọc quá khắt khe (ví dụ: vừa yêu cầu MUA vừa đòi hỏi RSI Quá bán).",
             "",
             "👉 <b>Gợi ý cho bạn:</b>",
-            "• Thử bộ lọc 📦 <b>Tích luỹ</b> để tìm các cổ phiếu đang nén nền giá chờ tăng.",
+            "• Thử bộ lọc 📦 <b>Tích luỹ</b> (<code>/loc tichluy</code>) để tìm các cổ phiếu "
+            "đang nén nền giá chờ tăng.",
             "• Xem tín hiệu tổng quát toàn thị trường bằng lệnh <code>/tinhieu</code>.",
             "• Thử lệnh lọc: <code>/loc san=HOSE kn=MUA</code> hoặc <code>/loc may=tren</code>",
         ]

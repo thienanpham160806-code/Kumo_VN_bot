@@ -226,7 +226,7 @@ GIẢM TỶ TRỌNG (reduce), BÁN (sell).
 ### 🔍 Group 2: Find opportunities and market-wide information
 | Command | Aliases | What it does |
 |---|---|---|
-| `/loc [conditions]` | `/screen` | Market-wide stock screener: 3 built-in screens (breakout, accumulation, warning), or custom conditions (e.g. `/loc san=HOSE kn=MUA kl=1.2`) |
+| `/loc [screen or conditions]` | `/screen` | Market-wide stock screener. 3 built-in pattern screens, via the buttons or by name: `/loc dotpha` (Đột phá, breakout), `/loc tichluy` (Tích luỹ, accumulation), `/loc canhbao` (Cảnh báo, warning). Or custom `key=value` conditions, e.g. `/loc san=HOSE kn=MUA kl=1.2` |
 | `/tinhieu` | `/signals` | Symbols with a MUA/TÍCH LUỸ or BÁN/GIẢM TỶ TRỌNG recommendation in the latest session (states which session's data) |
 | `/market` | | VN-Index: latest level (intraday it is the live level, fetched directly from Vietcap), change, range, volume |
 | `/tintuc` | `/news` | Latest macro news, legal documents, decrees and resolutions. Hourly automatic news is **on by default** for anyone who messages the bot; `/tintuc off` to turn it off, `/tintuc on` to turn it back on |
@@ -242,7 +242,9 @@ GIẢM TỶ TRỌNG (reduce), BÁN (sell).
 | `/help` | `/start` | Detailed help menu and quick-action keyboard |
 
 `/loc` supports these custom filter keys: `san` (exchange), `kn` (minimum
-recommendation), `rsi` (RSI zone), `may` (position relative to the Kumo
+`/kn` recommendation level, MUA > TÍCH LUỸ > THEO DÕI > GIẢM TỶ TRỌNG > BÁN;
+note that `kn=tichluy` means "recommendation TÍCH LUỸ or better" and is
+unrelated to the `/loc tichluy` pattern screen), `rsi` (RSI zone), `may` (position relative to the Kumo
 cloud), `macd` (cross direction), `phanky` (divergence), `diem` (minimum
 score), `kl` (minimum volume ratio), `pe`/`roe` (only after running
 `backfill_fundamentals.py`). Formulas for the three built-in screens:

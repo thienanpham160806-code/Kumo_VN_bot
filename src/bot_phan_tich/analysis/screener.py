@@ -117,6 +117,24 @@ def preset_warning() -> ScreenCriteria:
     )
 
 
+# Ba bo loc dung san: khoa noi bo (callback cua nut bam) -> ham tao tieu chi.
+PRESETS = {
+    "breakout": preset_breakout,
+    "accumulate": preset_accumulate,
+    "warning": preset_warning,
+}
+# Ten go tay cua tung bo loc, KHOP voi ten nut bam trong menu /loc
+# (bot/keyboards.screener_menu): /loc dotpha | tichluy | canhbao.
+PRESET_COMMANDS = {"dotpha": "breakout", "tichluy": "accumulate", "canhbao": "warning"}
+
+
+def preset_from_text(text: str) -> ScreenCriteria | None:
+    """`/loc dotpha` (hoac "Đột phá", "TICH LUY"...) -> tieu chi cua bo loc dung
+    san tuong ung; None neu khong phai ten bo loc."""
+    key = PRESET_COMMANDS.get(_normalize_token(text))
+    return PRESETS[key]() if key else None
+
+
 def _passes(row: pd.Series, criteria: ScreenCriteria) -> bool:
     if criteria.alert_mode:
         broke_down = row.get("price_vs_kumo") == "duoi_may" and (
@@ -341,6 +359,7 @@ _RSI_ALIASES = {"quamua": "qua_mua", "trungtinh": "trung_tinh", "quaban": "qua_b
 _DIV_ALIASES = {"duong": "bullish", "am": "bearish"}
 
 USAGE_EXAMPLE = "/loc san=HOSE kn=MUA"
+PRESET_USAGE = "/loc dotpha, /loc tichluy, /loc canhbao"
 
 
 def _normalize_token(value: str) -> str:
@@ -348,6 +367,8 @@ def _normalize_token(value: str) -> str:
     (vd 'quá bán' hoac 'quaban' deu ra 'quaban')."""
     decomposed = unicodedata.normalize("NFD", value)
     stripped = "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+    # "đ" khong tach thanh d + dau khi NFD (la mot chu cai rieng) - doi tay.
+    stripped = stripped.replace("đ", "d").replace("Đ", "D")
     return stripped.lower().replace("_", "").replace(" ", "").replace("-", "")
 
 
@@ -385,7 +406,8 @@ def parse_criteria(text: str) -> ScreenCriteria:
     for token in tokens:
         if "=" not in token:
             raise CriteriaParseError(
-                f"Tham số '{token}' thiếu dấu '='. Ví dụ đúng: {USAGE_EXAMPLE}"
+                f"Tham số '{token}' thiếu dấu '='. Ví dụ đúng: {USAGE_EXAMPLE}. "
+                f"Bộ lọc dựng sẵn thì gõ đúng tên: {PRESET_USAGE}"
             )
         key, _, value = token.partition("=")
         key, value = key.strip().lower(), value.strip()

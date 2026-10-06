@@ -49,13 +49,15 @@ HELP_TEXT = """<b>🤖 BOT PHÂN TÍCH KỸ THUẬT CHỨNG KHOÁN VIỆT NAM</b
 <i>(Quét toàn bộ thị trường, không cần nhập mã cụ thể)</i>
 
 • <code>/loc</code> — <b>Bộ lọc cổ phiếu toàn sàn</b>
-  ➔ Bấm 1 trong 3 nút chiến lược dựng sẵn:
-     🚀 <b>Đột phá:</b> Vượt mây Kumo + MACD cắt lên + Von nổ
-     📦 <b>Tích luỹ:</b> Nén nền chặt + RSI an toàn + Von cạn kiệt
-     ⚠️ <b>Cảnh báo:</b> Thủng mây hoặc Phân kỳ âm
-  ➔ Hoặc gõ điều kiện tuỳ biến:
-     <code>/loc san=HOSE kn=MUA</code> (Lọc mã MUA trên sàn HOSE)
-     <code>/loc may=tren kl=1.2</code> (Mã nằm trên mây, khối lượng tăng)
+  ➔ 3 bộ lọc dựng sẵn (bấm nút hoặc gõ đúng tên):
+     🚀 <b>Đột phá</b> <code>/loc dotpha</code>: vượt mây Kumo + MACD cắt lên + khối lượng nổ
+     📦 <b>Tích luỹ</b> <code>/loc tichluy</code>: nén giá trong mây mỏng + RSI trung tính
+        + khối lượng cạn
+     ⚠️ <b>Cảnh báo</b> <code>/loc canhbao</code>: thủng mây hoặc phân kỳ âm
+  ➔ Hoặc lọc tuỳ chỉnh <code>khoá=giá trị</code>; <code>kn=</code> là khuyến nghị
+     tối thiểu của lệnh /kn (MUA &gt; TÍCH LUỸ &gt; THEO DÕI &gt; GIẢM TỶ TRỌNG &gt; BÁN):
+     <code>/loc san=HOSE kn=MUA</code> (mã có khuyến nghị MUA trên HOSE)
+     <code>/loc may=tren kl=1.2</code> (giá trên mây, khối lượng tăng)
 
 • <code>/tinhieu</code> — <b>Tín hiệu MUA / BÁN phiên gần nhất</b>
   ➔ Danh sách cổ phiếu xuất hiện tín hiệu MUA/TÍCH LUỸ hoặc BÁN ở phiên gần nhất.

@@ -141,6 +141,12 @@ truoc (du van dang tren may, khoi luong cao) se **KHONG** lot vao "dot pha",
 vi `macd_bars_since` (so phien ke tu lan giao cat gan nhat) cua no vuot
 nguong `max_macd_bars_since`.
 
+Goi bo loc bang nut bam trong `/loc`, hoac go dung ten nut: `/loc dotpha`,
+`/loc tichluy`, `/loc canhbao` (co dau/khong dau deu duoc). Day la cac MAU
+HINH ky thuat, KHAC voi khoa `kn=` cua loc tuy chinh: `kn=` la muc khuyen
+nghi toi thieu cua lenh /kn (bang diem o muc tren), vd `kn=tichluy` = khuyen
+nghi TICH LUY hoac MUA, khong lien quan bo loc "Tich luy" ben duoi.
+
 ### 8.1. "Dot pha" (`preset_breakout()`)
 
 Tat ca dieu kien deu phai dung (AND):
