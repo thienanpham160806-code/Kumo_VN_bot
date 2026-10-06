@@ -80,6 +80,7 @@ class ScreenReport:
     as_of: datetime | None
     note: str | None = field(default=None)
     session: date | None = None  # ngay cua nen moi nhat trong snapshot
+    total_matches: int = 0  # so ma khop TRUOC khi cat con screener.max_results dong
 
 
 def preset_breakout() -> ScreenCriteria:
@@ -115,6 +116,24 @@ def preset_warning() -> ScreenCriteria:
         max_kumo_break_bars=settings.get("screener.warning.max_kumo_break_bars", 3),
         sort_ascending=True,
     )
+
+
+# Ba bo loc dung san: khoa noi bo (callback cua nut bam) -> ham tao tieu chi.
+PRESETS = {
+    "breakout": preset_breakout,
+    "accumulate": preset_accumulate,
+    "warning": preset_warning,
+}
+# Ten go tay cua tung bo loc, KHOP voi ten nut bam trong menu /loc
+# (bot/keyboards.screener_menu): /loc dotpha | tichluy | canhbao.
+PRESET_COMMANDS = {"dotpha": "breakout", "tichluy": "accumulate", "canhbao": "warning"}
+
+
+def preset_from_text(text: str) -> ScreenCriteria | None:
+    """`/loc dotpha` (hoac "Đột phá", "TICH LUY"...) -> tieu chi cua bo loc dung
+    san tuong ung; None neu khong phai ten bo loc."""
+    key = PRESET_COMMANDS.get(_normalize_token(text))
+    return PRESETS[key]() if key else None
 
 
 def _passes(row: pd.Series, criteria: ScreenCriteria) -> bool:
@@ -270,13 +289,14 @@ def screen_report(criteria: ScreenCriteria) -> ScreenReport:
     matched = frame.loc[mask].copy()
     matched = matched.sort_values("total_score", ascending=criteria.sort_ascending)
 
+    total_matches = len(matched)
     limit = get_settings().get("screener.max_results", 15)
     matched = matched.head(limit)
 
     results = _to_results(matched)
     return ScreenReport(
         results=results, total_universe=len(frame), as_of=as_of, note=note,
-        session=_session_of(frame),
+        session=_session_of(frame), total_matches=total_matches,
     )
 
 
@@ -341,6 +361,7 @@ _RSI_ALIASES = {"quamua": "qua_mua", "trungtinh": "trung_tinh", "quaban": "qua_b
 _DIV_ALIASES = {"duong": "bullish", "am": "bearish"}
 
 USAGE_EXAMPLE = "/loc san=HOSE kn=MUA"
+PRESET_USAGE = "/loc dotpha, /loc tichluy, /loc canhbao"
 
 
 def _normalize_token(value: str) -> str:
@@ -348,6 +369,8 @@ def _normalize_token(value: str) -> str:
     (vd 'quá bán' hoac 'quaban' deu ra 'quaban')."""
     decomposed = unicodedata.normalize("NFD", value)
     stripped = "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+    # "đ" khong tach thanh d + dau khi NFD (la mot chu cai rieng) - doi tay.
+    stripped = stripped.replace("đ", "d").replace("Đ", "D")
     return stripped.lower().replace("_", "").replace(" ", "").replace("-", "")
 
 
@@ -385,7 +408,8 @@ def parse_criteria(text: str) -> ScreenCriteria:
     for token in tokens:
         if "=" not in token:
             raise CriteriaParseError(
-                f"Tham số '{token}' thiếu dấu '='. Ví dụ đúng: {USAGE_EXAMPLE}"
+                f"Tham số '{token}' thiếu dấu '='. Ví dụ đúng: {USAGE_EXAMPLE}. "
+                f"Bộ lọc dựng sẵn thì gõ đúng tên: {PRESET_USAGE}"
             )
         key, _, value = token.partition("=")
         key, value = key.strip().lower(), value.strip()

@@ -1,5 +1,11 @@
-"""Lenh /loc (/screen): loc co phieu, co nut bam cho ba bo loc dung san,
-va tham so tuy chinh dang `/loc san=HOSE kn=MUA rsi=quaban`.
+"""Lenh /loc (/screen): loc co phieu.
+
+Hai lop, KHONG lan voi nhau:
+  1. Ba bo loc dung san (mau hinh ky thuat): bam nut, hoac go dung ten nut
+     `/loc dotpha` | `/loc tichluy` | `/loc canhbao`.
+  2. Loc tuy chinh `khoa=gia_tri`, vd `/loc san=HOSE kn=MUA rsi=quaban`;
+     `kn=` la MUC KHUYEN NGHI toi thieu cua lenh /kn (MUA > TICH LUY > THEO
+     DOI > GIAM TY TRONG > BAN), khac bo loc dung san "Tich luy".
 """
 from __future__ import annotations
 
@@ -11,11 +17,11 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from ...analysis.screener import (
+    PRESETS,
     CriteriaParseError,
+    ScreenCriteria,
     parse_criteria,
-    preset_accumulate,
-    preset_breakout,
-    preset_warning,
+    preset_from_text,
     screen_report,
 )
 from ...analysis.snapshot import data_unavailable_message, load_snapshot
@@ -26,11 +32,28 @@ from ..keyboards import screener_menu
 log = get_logger(__name__)
 router = Router(name="screener")
 
-_PRESETS = {
-    "breakout": preset_breakout,
-    "accumulate": preset_accumulate,
-    "warning": preset_warning,
-}
+_MENU_TEXT = (
+    "🔍 <b>BỘ LỌC CỔ PHIẾU TOÀN SÀN</b>\n\n"
+    "<b>1. Bộ lọc dựng sẵn</b>: bấm nút bên dưới hoặc gõ lệnh:\n"
+    "• 🚀 <b>Đột phá</b>: <code>/loc dotpha</code>\n"
+    "   Vượt mây Kumo + MACD cắt lên + khối lượng nổ (≥ 1.5x TB20)\n"
+    "• 📦 <b>Tích luỹ</b>: <code>/loc tichluy</code>\n"
+    "   Nén giá trong mây mỏng + RSI trung tính + khối lượng cạn\n"
+    "• ⚠️ <b>Cảnh báo</b>: <code>/loc canhbao</code>\n"
+    "   Giá vừa thủng mây Kumo hoặc xuất hiện phân kỳ âm\n\n"
+    "<b>2. Lọc tuỳ chỉnh</b>: ghép các điều kiện <code>khoá=giá trị</code>:\n"
+    "• <code>san=</code> sàn: HOSE, HNX, UPCOM\n"
+    "• <code>kn=</code> khuyến nghị tối thiểu theo lệnh /kn: "
+    "MUA &gt; TÍCH LUỸ &gt; THEO DÕI &gt; GIẢM TỶ TRỌNG &gt; BÁN "
+    "(gõ mua, tichluy, theodoi, giamtytrong, ban)\n"
+    "• <code>may=</code> tren/trong/duoi · <code>rsi=</code> quamua/trungtinh/quaban · "
+    "<code>kl=</code> khối lượng so với TB20\n"
+    "Ví dụ:\n"
+    "• <code>/loc san=HOSE kn=MUA</code> (khuyến nghị MUA trên HOSE)\n"
+    "• <code>/loc kn=tichluy</code> (khuyến nghị từ TÍCH LUỸ trở lên, tức TÍCH LUỸ "
+    "hoặc MUA; khác bộ lọc 📦 Tích luỹ ở trên)\n"
+    "• <code>/loc may=tren kl=1.2</code> (giá trên mây, khối lượng &gt; 1.2 lần TB20)"
+)
 
 
 async def _no_data_text() -> str | None:
@@ -41,47 +64,41 @@ async def _no_data_text() -> str | None:
     return escape(data_unavailable_message())
 
 
+async def _screen_text(criteria: ScreenCriteria, label: str) -> str:
+    try:
+        report = await asyncio.to_thread(screen_report, criteria)
+        return screener_results_card(
+            report.results, note=report.note, session=report.session, as_of=report.as_of,
+            total_matches=report.total_matches, universe=report.total_universe,
+        )
+    except Exception as exc:
+        log.exception("Lenh /loc (%s) that bai", label)
+        return error_card(str(exc))
+
+
 @router.message(Command("loc", "screen"))
 async def cmd_screen(message: Message) -> None:
     args = (message.text or "").split(maxsplit=1)
     custom_args = args[1].strip() if len(args) > 1 else ""
 
     if not custom_args:
-        intro_text = (
-            "🔍 <b>BỘ LỌC CỔ PHIẾU TOÀN SÀN</b>\n\n"
-            "Chọn một bộ lọc dựng sẵn bên dưới:\n"
-            "• 🚀 <b>Đột phá:</b> Vượt mây Kumo + MACD cắt lên + Khối lượng nổ (>= 1.5x TB20)\n"
-            "• 📦 <b>Tích luỹ:</b> Nén giá trong mây mỏng + RSI trung tính + Von cạn kiệt\n"
-            "• ⚠️ <b>Cảnh báo:</b> Giá vừa thủng mây Kumo hoặc xuất hiện phân kỳ âm\n\n"
-            "Hoặc gõ điều kiện tuỳ chỉnh, ví dụ:\n"
-            "• <code>/loc san=HOSE kn=MUA</code> (Lọc các mã có khuyến nghị MUA trên HOSE)\n"
-            "• <code>/loc san=HOSE kn=tichluy</code> (Lọc các mã tích luỹ nền giá)\n"
-            "• <code>/loc may=tren kl=1.2</code> (Giá trên mây, khối lượng tăng > 1.2 lần)\n"
-            "• <code>/loc rsi=quaban</code> (RSI rơi vào vùng quá bán để canh bắt đáy)"
-        )
-        await message.answer(intro_text, reply_markup=screener_menu())
+        await message.answer(_MENU_TEXT, reply_markup=screener_menu())
         return
 
-    try:
-        criteria = parse_criteria(custom_args)
-    except CriteriaParseError as exc:
-        await message.answer(error_card(str(exc)))
-        return
+    # Khong co dau "=": phai la ten mot bo loc dung san (giong nut bam).
+    criteria = preset_from_text(custom_args) if "=" not in custom_args else None
+    if criteria is None:
+        try:
+            criteria = parse_criteria(custom_args)
+        except CriteriaParseError as exc:
+            await message.answer(error_card(str(exc)))
+            return
 
     no_data = await _no_data_text()
     if no_data:
         await message.answer(no_data)
         return
-
-    try:
-        report = await asyncio.to_thread(screen_report, criteria)
-        text = screener_results_card(
-            report.results, note=report.note, session=report.session, as_of=report.as_of
-        )
-    except Exception as exc:
-        log.exception("Lenh /loc (tuy chinh) that bai")
-        text = error_card(str(exc))
-    await message.answer(text)
+    await message.answer(await _screen_text(criteria, custom_args))
 
 
 @router.callback_query(lambda c: bool(c.data) and c.data.startswith("screen:"))
@@ -91,7 +108,7 @@ async def on_screen_preset(callback: CallbackQuery) -> None:
         return
 
     preset_key = callback.data.split(":", 1)[1]
-    factory = _PRESETS.get(preset_key)
+    factory = PRESETS.get(preset_key)
     if factory is None:
         await callback.answer("Bộ lọc không hợp lệ.")
         return
@@ -105,12 +122,4 @@ async def on_screen_preset(callback: CallbackQuery) -> None:
         return
 
     await callback.answer("Đang lọc...")
-    try:
-        report = await asyncio.to_thread(screen_report, factory())
-        text = screener_results_card(
-            report.results, note=report.note, session=report.session, as_of=report.as_of
-        )
-    except Exception as exc:
-        log.exception("Loc theo bo dung san %s that bai", preset_key)
-        text = error_card(str(exc))
-    await callback.message.answer(text)
+    await callback.message.answer(await _screen_text(factory(), preset_key))

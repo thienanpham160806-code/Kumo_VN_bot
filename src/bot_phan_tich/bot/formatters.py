@@ -510,8 +510,11 @@ def _session_line(session, as_of) -> str | None:
 
 
 def screener_results_card(
-    results, note: str | None = None, limit: int = 15, session=None, as_of=None
+    results, note: str | None = None, limit: int = 15, session=None, as_of=None,
+    total_matches: int | None = None, universe: int | None = None,
 ) -> str:
+    """`total_matches`: so ma khop that (truoc khi cat con screener.max_results
+    dong); `universe`: so ma trong snapshot (vu tru thanh khoan) da duoc quet."""
     session_line = _session_line(session, as_of)
     if not results:
         lines = [
@@ -522,7 +525,8 @@ def screener_results_card(
             "• Tiêu chí lọc quá khắt khe (ví dụ: vừa yêu cầu MUA vừa đòi hỏi RSI Quá bán).",
             "",
             "👉 <b>Gợi ý cho bạn:</b>",
-            "• Thử bộ lọc 📦 <b>Tích luỹ</b> để tìm các cổ phiếu đang nén nền giá chờ tăng.",
+            "• Thử bộ lọc 📦 <b>Tích luỹ</b> (<code>/loc tichluy</code>) để tìm các cổ phiếu "
+            "đang nén nền giá chờ tăng.",
             "• Xem tín hiệu tổng quát toàn thị trường bằng lệnh <code>/tinhieu</code>.",
             "• Thử lệnh lọc: <code>/loc san=HOSE kn=MUA</code> hoặc <code>/loc may=tren</code>",
         ]
@@ -535,15 +539,21 @@ def screener_results_card(
         lines.append(DISCLAIMER)
         return "\n".join(lines)
 
-    lines = [f"🔍 <b>Kết quả lọc cổ phiếu</b> ({len(results)} mã phù hợp)", ""]
+    shown = min(len(results), limit)
+    matched = max(total_matches or 0, len(results))
+    scope = f" trong {universe} mã thanh khoản" if universe else ""
+    header = f"{matched} mã phù hợp{scope}"
+    if matched > shown:
+        header += f", hiển thị {shown} mã đầu theo điểm"
+    lines = [f"🔍 <b>Kết quả lọc cổ phiếu</b> ({header})", ""]
     for r in results[:limit]:
         emoji = _ACTION_EMOJI.get(r.action, "📌")
         lines.append(
             f"{emoji} <b>{escape(r.symbol)}</b> — <b>{escape(r.action)}</b>  "
             f"| Điểm: <b>{r.total_score:+.0f}</b>  | Giá: <b>{price(r.close)}</b>"
         )
-    if len(results) > limit:
-        lines.append(f"<i>... và {len(results) - limit} mã khác</i>")
+    if matched > shown:
+        lines.append(f"<i>... và {matched - shown} mã khác</i>")
     if session_line:
         lines += ["", f"<i>{session_line}</i>"]
     if note:
