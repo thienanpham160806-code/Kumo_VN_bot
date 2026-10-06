@@ -302,3 +302,31 @@ def test_cards_show_trading_session_not_file_time():
     card = signals_card(report)
     assert "Tín hiệu kỹ thuật phiên 24/09/2026" in card
     assert "25/09/2026</b>" not in card
+
+
+def test_report_and_card_show_true_match_count_when_list_is_capped(
+    isolated_snapshot, monkeypatch
+):
+    """Cap so dong hien thi (screener.max_results) khong duoc lam sai so ma khop:
+    20 ma khop, hien 5 -> tieu de phai noi 20 ma khop, hien thi 5."""
+    from bot_phan_tich.bot.formatters import screener_results_card
+
+    rows = [_row(f"S{i}", total_score=float(i)) for i in range(20)]
+    rows += [_row(f"X{i}", exchange="HNX") for i in range(7)]  # vu tru 27 ma
+    _write_snapshot(rows)
+
+    class FakeSettings:
+        def get(self, key, default=None):
+            return 5 if key == "screener.max_results" else default
+
+    monkeypatch.setattr(screener_mod, "get_settings", lambda: FakeSettings())
+    report = screener_mod.screen_report(screener_mod.ScreenCriteria(exchanges=["HOSE"]))
+    assert len(report.results) == 5
+    assert report.total_matches == 20
+    assert report.total_universe == 27
+
+    card = screener_results_card(report.results, total_matches=report.total_matches,
+                                 universe=report.total_universe)
+    assert "20 mã phù hợp" in card
+    assert "27 mã thanh khoản" in card
+    assert "hiển thị 5" in card

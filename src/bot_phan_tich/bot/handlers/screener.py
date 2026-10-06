@@ -68,7 +68,8 @@ async def _screen_text(criteria: ScreenCriteria, label: str) -> str:
     try:
         report = await asyncio.to_thread(screen_report, criteria)
         return screener_results_card(
-            report.results, note=report.note, session=report.session, as_of=report.as_of
+            report.results, note=report.note, session=report.session, as_of=report.as_of,
+            total_matches=report.total_matches, universe=report.total_universe,
         )
     except Exception as exc:
         log.exception("Lenh /loc (%s) that bai", label)

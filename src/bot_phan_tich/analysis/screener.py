@@ -80,6 +80,7 @@ class ScreenReport:
     as_of: datetime | None
     note: str | None = field(default=None)
     session: date | None = None  # ngay cua nen moi nhat trong snapshot
+    total_matches: int = 0  # so ma khop TRUOC khi cat con screener.max_results dong
 
 
 def preset_breakout() -> ScreenCriteria:
@@ -288,13 +289,14 @@ def screen_report(criteria: ScreenCriteria) -> ScreenReport:
     matched = frame.loc[mask].copy()
     matched = matched.sort_values("total_score", ascending=criteria.sort_ascending)
 
+    total_matches = len(matched)
     limit = get_settings().get("screener.max_results", 15)
     matched = matched.head(limit)
 
     results = _to_results(matched)
     return ScreenReport(
         results=results, total_universe=len(frame), as_of=as_of, note=note,
-        session=_session_of(frame),
+        session=_session_of(frame), total_matches=total_matches,
     )
 
 
