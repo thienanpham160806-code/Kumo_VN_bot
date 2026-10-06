@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/thienanpham160806-code/bot-phan-tich/actions/workflows/ci.yml/badge.svg)
 
-## Overview (English)
+## Overview
 
 A Telegram bot and research stack for Vietnamese equities (HOSE/HNX/UPCOM).
 Daily OHLCV for ~1,500 symbols lives in one parquet store; `analysis/scoring.py`
@@ -33,76 +33,82 @@ Deflated Sharpe Ratios (Bailey & López de Prado, 2014).
 All 12 parameter combinations lose money. Cross-sectional rank IC of the total
 score is +0.023 at 20 days (Newey–West t = 1.72, not significant) and −0.020
 at 1 day (t = −4.1, short-term reversal). Fixing T+2, gap fills and limit-down
-handling moved the same signals from −33.7% to −42.6%. Details (in
-Vietnamese): section 5b below and [INTERVIEW_NOTES.md](INTERVIEW_NOTES.md).
+handling moved the same signals from −33.7% to −42.6%. Details: section 5b
+below; interview notes (in Vietnamese): [INTERVIEW_NOTES.md](INTERVIEW_NOTES.md).
 
 ---
 
-Telegram Bot phân tích kỹ thuật chứng khoán Việt Nam — hợp lưu ba hệ chỉ báo
-**MACD, RSI (ngưỡng thích ứng), Ichimoku Kinko Hyo** — trên **toàn sàn**
-HOSE/HNX/UPCOM (không chỉ vài mã theo dõi mẫu).
+## About the bot
 
-Kiến trúc cốt lõi: giá toàn sàn nằm trong một kho parquet duy nhất
-(`data/market_store.py`); khuyến nghị của từng mã được tính sẵn thành
-"snapshot" (`analysis/snapshot.py`) sau phiên sáng và sau giờ đóng cửa, nên
-`/loc` và `/tinhieu` chỉ đọc bảng có sẵn và trả lời dưới 1 giây. Việc nặng
-chạy trong thread riêng (`asyncio.to_thread`), bot vẫn trả lời lệnh khác trong
-lúc nạp dữ liệu — xem [docs/kien-truc.md](docs/kien-truc.md).
+A Telegram bot for technical analysis of Vietnamese stocks. It combines three
+indicator systems, **MACD, RSI (adaptive thresholds) and Ichimoku Kinko Hyo**,
+across the **whole market** (HOSE/HNX/UPCOM), not just a handful of sample
+tickers. The bot's commands and replies are in Vietnamese.
+
+Core architecture: prices for the whole market live in a single parquet store
+(`data/market_store.py`). Each symbol's recommendation is precomputed into a
+"snapshot" (`analysis/snapshot.py`) after the morning session and after the
+close, so `/loc` (screener) and `/tinhieu` (signals) only read a ready-made
+table and answer in under a second. Heavy work runs in a separate thread
+(`asyncio.to_thread`), so the bot keeps answering other commands while it loads
+data. See [docs/kien-truc.md](docs/kien-truc.md) (Vietnamese).
 
 ---
 
-## 0. Bắt đầu nhanh
+## 0. Quick start
 
-### 0.1. Cài đặt
+### 0.1. Install
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env    # Windows: copy .env.example .env — rồi điền TELEGRAM_BOT_TOKEN
+cp .env.example .env    # Windows: copy .env.example .env, then fill in TELEGRAM_BOT_TOKEN
 ```
 
-Chi tiết (virtualenv, khoá DNSE tuỳ chọn): mục 1 và 2.
+Details (virtualenv, optional DNSE key): sections 1 and 2.
 
-### 0.2. Hai lệnh nạp dữ liệu
+### 0.2. The two data-loading commands
 
-| Lệnh | Làm gì | Mất bao lâu |
+| Command | What it does | How long |
 |---|---|---|
-| `python scripts/backfill_data.py` | Tải giá toàn sàn (HOSE/HNX/UPCOM, khoảng 1.500 mã) về máy, lưu vào **một file duy nhất** `data/market/ohlcv.parquet`. | Lần đầu 2–3 phút (500 phiên/mã). Các lần sau khoảng 1–2 phút: vẫn gọi mỗi mã một lượt nhưng chỉ tải 10 phiên gần nhất rồi gộp vào kho cũ. |
-| `python scripts/build_snapshot.py` | Chạy chiến lược (MACD + RSI thích ứng + Ichimoku) cho từng mã đủ thanh khoản trong kho, ghi ra bảng kết quả `data/market/snapshot.parquet`. **Đây chính là bảng mà `/loc` và `/tinhieu` đọc** — hai lệnh này không tự tính gì. | 5–20 giây (khoảng 200 mã, tuỳ máy). |
+| `python scripts/backfill_data.py` | Downloads prices for the whole market (HOSE/HNX/UPCOM, about 1,500 symbols) and stores them in **a single file**, `data/market/ohlcv.parquet`. | First run 2–3 minutes (500 sessions per symbol). Later runs about 1–2 minutes: it still requests every symbol once, but only fetches the last 10 sessions and merges them into the existing store. |
+| `python scripts/build_snapshot.py` | Runs the strategy (MACD + adaptive RSI + Ichimoku) for every sufficiently liquid symbol in the store and writes the results table `data/market/snapshot.parquet`. **This is the table that `/loc` and `/tinhieu` read**; those two commands compute nothing themselves. | 5–20 seconds (about 200 symbols, depending on the machine). |
 
-**Thứ tự bắt buộc: `backfill_data.py` trước, `build_snapshot.py` sau.**
-`build_snapshot.py` chỉ đọc kho do `backfill_data.py` tạo ra. Chạy ngược lại
-(hoặc chưa backfill) thì kho trống, snapshot rỗng, và `/loc` báo "đang chuẩn
-bị dữ liệu" — đúng lỗi gặp trước đây.
+**Required order: `backfill_data.py` first, then `build_snapshot.py`.**
+`build_snapshot.py` only reads the store that `backfill_data.py` creates. In
+the wrong order (or without a backfill) the store is empty, the snapshot is
+empty, and `/loc` replies "đang chuẩn bị dữ liệu" (preparing data). That was
+exactly the earlier bug.
 
-Khi bot đang chạy, nó tự làm lại hai bước này vào thứ 2–6: **11:35** (sau
-phiên sáng, kết quả ghi "tạm tính") và **15:05** (sau giờ đóng cửa, bản chính
-thức). Khởi động trên máy chưa có dữ liệu thì bot cũng tự nạp ở nền (xem tiến
-độ bằng `/trangthai`). Chạy tay hai lệnh trên chủ yếu để có dữ liệu ngay,
-trước khi demo.
+While the bot is running, it repeats these two steps itself Monday–Friday at
+**11:35** (after the morning session; results are marked provisional) and
+**15:05** (after the close; the official version). If it starts on a machine
+with no data, it also loads in the background (check progress with
+`/trangthai`). Running the two commands by hand is mainly for having data
+right away, before a demo.
 
-**Sự cố thường gặp**
+**Common problems**
 
-| Hiện tượng | Nguyên nhân | Cách xử lý |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `/loc`, `/tinhieu` báo "đang chuẩn bị dữ liệu" | Chưa có snapshot: chưa chạy hai lệnh, chạy sai thứ tự, hoặc bot đang tự nạp ở nền | Chạy `backfill_data.py` rồi `build_snapshot.py`. Nếu bot đang tự nạp: gõ `/trangthai` xem tiến độ, chờ vài phút |
-| `backfill_data.py` báo nhiều mã thất bại (dòng cuối `Xong: X/Y ma`, X thấp hơn Y nhiều) | Vietcap tạm giới hạn tần suất hoặc chặn IP — endpoint bảng giá không chính thức | Đợi vài phút rồi chạy lại. Vài chục mã lỗi là bình thường (mã ngừng giao dịch, mới niêm yết) |
-| `build_snapshot.py` báo "vũ trụ thanh khoản rỗng" | Kho trống (chưa backfill, hoặc backfill tải hỏng hết), hoặc mỗi mã có ít hơn 250 phiên nên không qua điều kiện `universe.min_listed_days` (do đặt `MARKET_COUNT_BACK` < 250) | Chạy `backfill_data.py` trước và xem dòng `Xong:` có đủ mã không. Nếu đã đặt `MARKET_COUNT_BACK`, để ≥ 400 rồi chạy `backfill_data.py --full` |
-| Máy treo / rất chậm khi build | Bản cũ mở nhiều tiến trình, mỗi tiến trình giữ một bản sao kho giá. Bản hiện tại chạy tuần tự, RAM đỉnh khoảng 250 MB | Kiểm tra `snapshot.max_workers: 1` trong `config/settings.yaml`. Máy yếu: đặt `UNIVERSE_MAX_SYMBOLS=200` trong `.env` để chỉ tính 200 mã thanh khoản nhất |
-| Không có dữ liệu hôm nay | Snapshot chính thức chỉ có **sau 15:05**; bản tạm tính phiên sáng có sau 11:35 | Demo trước 11:35 thì dữ liệu là của **phiên hôm trước** — kết quả `/loc`, `/tinhieu` ghi rõ "Dữ liệu phiên dd/mm", cứ nói thẳng với thầy. Từ 11:35 đến 15:05 là bản tạm tính (có ghi chú). `/market` luôn lấy điểm VN-Index mới nhất, kể cả trong phiên |
+| `/loc`, `/tinhieu` reply "đang chuẩn bị dữ liệu" (preparing data) | No snapshot yet: the two commands were not run, were run in the wrong order, or the bot is loading in the background | Run `backfill_data.py`, then `build_snapshot.py`. If the bot is loading by itself, type `/trangthai` to see progress and wait a few minutes |
+| `backfill_data.py` reports many failed symbols (last line `Xong: X/Y ma`, X much lower than Y) | Vietcap is temporarily rate-limiting or blocking the IP; the price-board endpoint is unofficial | Wait a few minutes and rerun. A few dozen failures are normal (suspended or newly listed symbols) |
+| `build_snapshot.py` reports an empty liquid universe | The store is empty (no backfill, or every download failed), or each symbol has fewer than 250 sessions and so fails `universe.min_listed_days` (because `MARKET_COUNT_BACK` < 250) | Run `backfill_data.py` first and check that the `Xong:` line covers enough symbols. If you set `MARKET_COUNT_BACK`, use ≥ 400 and run `backfill_data.py --full` |
+| The machine hangs or is very slow while building | Older versions spawned several processes, each holding a copy of the price store. The current version runs sequentially with a peak of about 250 MB of RAM | Check `snapshot.max_workers: 1` in `config/settings.yaml`. On a weak machine, set `UNIVERSE_MAX_SYMBOLS=200` in `.env` to compute only the 200 most liquid symbols |
+| No data for today | The official snapshot only exists **after 15:05**; the provisional morning version after 11:35 | Before 11:35 the data is from **the previous session**; `/loc` and `/tinhieu` state "Dữ liệu phiên dd/mm" (data as of session dd/mm), so say so when demoing. Between 11:35 and 15:05 it is the provisional version (labelled). `/market` always shows the latest VN-Index level, including intraday |
 
-### 0.3. Chạy bot
+### 0.3. Run the bot
 
 ```bash
 python scripts/run_bot.py
 ```
 
-Tạm dừng service trên Render trước khi chạy trên máy (xem mục 7.1).
+Suspend the Render service before running locally (see section 7.1).
 
 ---
 
-## 1. Cài đặt
+## 1. Installation
 
-Yêu cầu Python 3.10+.
+Requires Python 3.10+.
 
 ```bash
 git clone https://github.com/thienanpham160806-code/bot-phan-tich.git
@@ -120,437 +126,475 @@ cp .env.example .env   # Windows: copy .env.example .env
 
 ---
 
-## 2. Cấu hình `.env`
+## 2. Configuring `.env`
 
-Mở `.env` và điền:
+Open `.env` and fill in:
 
-| Biến | Lấy ở đâu |
+| Variable | Where to get it |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Chat với [@BotFather](https://t.me/BotFather) trên Telegram, lệnh `/newbot` |
-| `DNSE_API_KEY`, `DNSE_API_SECRET` | EntradeX → mục LightSpeed API (xem hướng dẫn bên dưới) — **tuỳ chọn** |
-| `VNSTOCK_ACCEPT_TOS` | Đặt `1` sau khi chạy `register_user()` của vnstock một lần |
+| `TELEGRAM_BOT_TOKEN` | Chat with [@BotFather](https://t.me/BotFather) on Telegram, command `/newbot` |
+| `DNSE_API_KEY`, `DNSE_API_SECRET` | EntradeX → LightSpeed API (see below). **Optional** |
+| `VNSTOCK_ACCEPT_TOS` | Set to `1` after running vnstock's `register_user()` once |
 
-> **Không bao giờ** commit file `.env`. File này đã nằm trong `.gitignore`
-> (chỉ `.env.example` — bản mẫu rỗng — mới được commit).
+> **Never** commit `.env`. It is already in `.gitignore` (only `.env.example`,
+> an empty template, is committed).
 
-Chưa có `DNSE_API_KEY`/`DNSE_API_SECRET` cũng không sao — `data/router.py`
-tự động dùng nguồn dự phòng (Vietcap/VCI qua `vnstock`, không cần API key)
-nên bot vẫn chạy được đầy đủ phần dữ liệu cuối phiên. Xem bảng nguồn dữ liệu
-ở mục 6.
+Without `DNSE_API_KEY`/`DNSE_API_SECRET` the bot still works: `data/router.py`
+automatically falls back to the backup source (Vietcap/VCI via `vnstock`, no
+API key needed), so all end-of-day data features keep running. See the data
+source table in section 6.
 
-### Cách lấy API key DNSE (nếu muốn dùng nguồn chính)
+### Getting a DNSE API key (to use the primary source)
 
-1. Mở tài khoản chứng khoán online tại <https://www.dnse.com.vn> (eKYC bằng
-   CCCD gắn chip), không cần nạp tiền để dùng phần dữ liệu thị trường.
-2. Đăng nhập **EntradeX** (<https://banggia.dnse.com.vn> hoặc app EntradeX)
-   → mục **LightSpeed API** trong cài đặt tài khoản → tạo khoá.
-3. **API secret chỉ hiện đúng một lần** — copy ngay vào `.env`, lỡ mất phải
-   tạo khoá mới. Không thấy mục LightSpeed API thì liên hệ DNSE (hotline
-   024 7108 9234 / hello@dnse.com.vn), cung cấp số tài khoản 064C + họ tên.
-4. `pip install openapi-sdk` (theo docs của DNSE) **không cài được** — tên
-   gói đó chỉ là ví dụ trong docs, không phải tên thật trên PyPI. Tên gói
-   PyPI thật là `dnse-sdk-openapi` (đã có sẵn trong `requirements.txt`,
-   không cần cài riêng — xem `data/dnse.py`).
+1. Open an online brokerage account at <https://www.dnse.com.vn> (eKYC with a
+   chip-based national ID card). No deposit is needed for market data.
+2. Log in to **EntradeX** (<https://banggia.dnse.com.vn> or the EntradeX app)
+   → **LightSpeed API** in account settings → create a key.
+3. **The API secret is shown only once.** Copy it into `.env` right away; if
+   you lose it you must create a new key. If you can't find LightSpeed API,
+   contact DNSE (hotline 024 7108 9234 / hello@dnse.com.vn) with your 064C
+   account number and full name.
+4. `pip install openapi-sdk` (as in DNSE's docs) **does not work**: that
+   package name is only an example in the docs, not the real PyPI name. The
+   real PyPI package is `dnse-sdk-openapi` (already in `requirements.txt`, no
+   separate install needed; see `data/dnse.py`).
 
-Cấu hình Vietcap (nguồn dự phòng, **không cần API key**): qua thư viện
-`vnstock`, chạy `register_user()` một lần, đặt `VNSTOCK_ACCEPT_TOS=1` trong
-`.env`. **vnstock là phụ thuộc tuỳ chọn**: từ 25/09/2026 gói bị PyPI cách ly
-nên không còn trong `requirements.txt`. Cài riêng khi tải được:
-`pip install ".[vnstock]"` (hoặc `pip install "vnstock>=4.0"`). Thiếu vnstock,
-bot vẫn chạy: giá lấy từ kho local, endpoint công khai Vietcap và DNSE; các
-lệnh cần báo cáo tài chính/ngành/tin công bố trả lời "chưa có dữ liệu" thay vì
-lỗi (`tests/test_optional_vnstock.py`).
+Vietcap configuration (backup source, **no API key needed**): through the
+`vnstock` library. Run `register_user()` once and set `VNSTOCK_ACCEPT_TOS=1`
+in `.env`. **vnstock is an optional dependency**: since 25/09/2026 the package
+has been quarantined on PyPI, so it is no longer in `requirements.txt`.
+Install it separately when it is available: `pip install ".[vnstock]"` (or
+`pip install "vnstock>=4.0"`). Without vnstock the bot still runs: prices come
+from the local store, Vietcap's public endpoint and DNSE; commands that need
+financial statements, industry data or disclosures reply "no data yet"
+instead of failing (`tests/test_optional_vnstock.py`).
 
-> Lỡ commit lộ `DNSE_API_KEY`/`DNSE_API_SECRET` lên Git: vào EntradeX **tạo
-> khoá mới ngay** (khoá cũ coi như đã lộ) rồi mới dọn lịch sử commit — đổi
-> khoá trước, dọn git sau.
+> If you accidentally commit `DNSE_API_KEY`/`DNSE_API_SECRET` to Git: go to
+> EntradeX and **create a new key immediately** (treat the old one as leaked),
+> then clean the commit history. Rotate the key first, clean git second.
 
 ---
 
-## 3. Nạp dữ liệu và chạy bot
+## 3. Loading data and running the bot
 
-Hai lệnh nạp dữ liệu, thứ tự và sự cố thường gặp: xem **mục 0.2**. Tuỳ chọn
-của `backfill_data.py`: `--full` (tải lại từ đầu), `--watchlist-only` (chỉ 12
-mã trong `config/universe.yaml`, để phát triển cho nhanh). Số phiên tải lần
-đầu: `market_store.count_back_bootstrap` trong `config/settings.yaml` hoặc
-biến `MARKET_COUNT_BACK`.
+The two data-loading commands, their order and common problems: see
+**section 0.2**. Options for `backfill_data.py`: `--full` (reload from
+scratch), `--watchlist-only` (only the 12 symbols in `config/universe.yaml`,
+for fast development). Sessions fetched on the first load:
+`market_store.count_back_bootstrap` in `config/settings.yaml` or the
+`MARKET_COUNT_BACK` variable.
 
-Tuỳ chọn thêm (không bắt buộc để bot chạy được):
+Optional extras (not needed for the bot to run):
 
 ```bash
-# Chỉ số cơ bản (P/E, P/B, ROE) cho vũ trụ thanh khoản — bổ sung điều kiện
-# lọc pe=/roe= trong /loc. Cache 7 ngày, tự bỏ qua nếu chạy lại quá sớm.
+# Fundamentals (P/E, P/B, ROE) for the liquid universe; enables the pe=/roe=
+# filters in /loc. Cached for 7 days; skipped if rerun too soon.
 python scripts/backfill_fundamentals.py
 
-# Backtest đầy đủ (walk-forward, PSR/DSR, độ nhạy chi phí) + khung 3/6 tháng
-# gần nhất, so với mua-và-giữ VN-Index -> outputs/backtest/ (mục 5b), ~5 phút.
+# Full backtest (walk-forward, PSR/DSR, cost sensitivity) plus the latest
+# 3/6-month windows, vs VN-Index buy & hold -> outputs/backtest/ (section 5b), ~5 min.
 python scripts/run_backtest.py
 
-# Đo tốc độ sinh tín hiệu: bản cũ O(n^2) so với bản vectorized -> docs/benchmark.md.
+# Signal-generation speed: old O(n^2) version vs vectorized -> docs/benchmark.md.
 python scripts/bench_signals.py
 
-# Phân tích IC của điểm MACD/RSI/Ichimoku/tổng (mục 5b) -> outputs/ic/.
+# IC analysis of the MACD/RSI/Ichimoku/total scores (section 5b) -> outputs/ic/.
 python scripts/ic_analysis.py
 ```
 
-Kiểm thử: `pytest -q`. Chất lượng mã: `ruff check src tests scripts`.
+Tests: `pytest -q`. Code quality: `ruff check src tests scripts`.
 
-Trên Windows có thể dùng script tác vụ cho gọn (`.\tasks.ps1 <task>` — xem
-`tasks.ps1` để biết danh sách đầy đủ).
-
----
-
-## 4. Bộ lệnh bot
-
-Lệnh chia theo 3 nhóm:
-
-### 🎯 Nhóm 1: Phân tích 1 cổ phiếu cụ thể
-| Lệnh ngắn | Bí danh | Chức năng |
-|---|---|---|
-| `/kn MA` | `/khuyennghi`, `/rec` | Khuyến nghị MUA/TÍCH LUỸ/THEO DÕI/GIẢM TỶ TRỌNG/BÁN, kế hoạch giá (vùng vào, cắt lỗ, mục tiêu), R:R, tỷ trọng giải ngân gợi ý |
-| `/chart MA` | `/bieudo` | Biểu đồ nến kỹ thuật tích hợp mây Ichimoku, MACD, RSI |
-| `/info MA` | `/tracuu` | Hồ sơ niêm yết, P/E, P/B, ROE, vốn hoá và tin công bố thông tin gần đây |
-| `/fin MA` | `/bctc` | Nhận xét BCTC nhiều năm: tăng trưởng, sinh lời, cơ cấu vốn, dòng tiền (ngân hàng có thêm thu nhập lãi thuần, dự phòng, cho vay/huy động). Có PDF BCTC thì khai thác thêm ý kiến kiểm toán và rủi ro thuyết minh: gửi file kèm chú thích `/fin MA`, hoặc trả lời (reply) file bằng `/fin MA`. PDF bản scan không có chữ thì không đọc được |
-
-### 🔍 Nhóm 2: Tìm cơ hội đầu tư & Thông tin toàn sàn
-| Lệnh ngắn | Bí danh | Chức năng |
-|---|---|---|
-| `/loc [đk]` | `/screen` | Bộ lọc cổ phiếu toàn sàn — 3 bộ lọc dựng sẵn (Đột phá, Tích luỹ, Cảnh báo), hoặc gõ điều kiện tuỳ biến (VD: `/loc san=HOSE kn=MUA kl=1.2`) |
-| `/tinhieu` | `/signals` | Các mã có khuyến nghị MUA/TÍCH LUỸ hoặc BÁN/GIẢM TỶ TRỌNG ở phiên gần nhất (ghi rõ dữ liệu phiên nào) |
-| `/market` | | VN-Index: điểm mới nhất (trong phiên là điểm hiện tại, lấy trực tiếp từ Vietcap), mức tăng/giảm, biên độ, khối lượng |
-| `/tintuc` | `/news` | Tổng hợp tin tức vĩ mô, văn bản pháp quy, nghị định, nghị quyết mới nhất. Tin tự động mỗi 1 giờ được **bật sẵn** cho ai nhắn bot; `/tintuc off` để tắt, `/tintuc on` để bật lại |
-
-### ⭐ Nhóm 3: Quản lý danh mục & Cảnh báo cá nhân
-| Lệnh ngắn | Bí danh | Chức năng |
-|---|---|---|
-| `/sub MA` | `/theodoi` | Thêm mã vào danh mục theo dõi cá nhân |
-| `/watchlist` | `/danhsach` | Xem danh sách cổ phiếu theo dõi kèm khuyến nghị hiện tại |
-| `/unsub MA` | `/bosach` | Bỏ theo dõi một mã |
-| `/canhbao` | `/alerts` | Bật/tắt cảnh báo tự động cuối phiên (15:05 mỗi ngày giao dịch) |
-| `/trangthai` | `/status` | Tình trạng dữ liệu: kho giá, snapshot (mới/cũ/tạm thời), tiến độ nạp nền, lỗi gần nhất, RAM đang dùng |
-| `/help` | `/start` | Menu hướng dẫn chi tiết và bàn phím tương tác nhanh |
-
-`/loc` hỗ trợ các khoá lọc tuỳ chỉnh: `san` (sàn), `kn` (khuyến nghị tối
-thiểu), `rsi` (vùng RSI), `may` (vị trí so với mây Kumo), `macd` (chiều giao
-cắt), `phanky` (phân kỳ), `diem` (điểm tối thiểu), `kl` (tỷ lệ khối lượng tối
-thiểu), `pe`/`roe` (chỉ khả dụng sau khi chạy `backfill_fundamentals.py`).
-Công thức chi tiết ba bộ lọc dựng sẵn: [docs/cong-thuc.md](docs/cong-thuc.md).
+On Windows you can use the task script (`.\tasks.ps1 <task>`; see
+`tasks.ps1` for the full list).
 
 ---
 
-## 5. Kiến trúc
+## 4. Bot commands
 
-Sơ đồ đầy đủ và nguyên tắc thiết kế: [docs/kien-truc.md](docs/kien-truc.md).
-Công thức/ngưỡng của từng chỉ báo: [docs/cong-thuc.md](docs/cong-thuc.md).
+Commands fall into three groups. Recommendation labels are the bot's
+Vietnamese output: MUA (buy), TÍCH LUỸ (accumulate), THEO DÕI (watch),
+GIẢM TỶ TRỌNG (reduce), BÁN (sell).
+
+### 🎯 Group 1: Analyse a single stock
+| Command | Aliases | What it does |
+|---|---|---|
+| `/kn SYMBOL` | `/khuyennghi`, `/rec` | Recommendation (MUA/TÍCH LUỸ/THEO DÕI/GIẢM TỶ TRỌNG/BÁN), price plan (entry zone, stop loss, target), R:R, suggested position size |
+| `/chart SYMBOL` | `/bieudo` | Candlestick chart with the Ichimoku cloud, MACD and RSI |
+| `/info SYMBOL` | `/tracuu` | Listing profile, P/E, P/B, ROE, market cap and recent corporate disclosures |
+| `/fin SYMBOL` | `/bctc` | Multi-year review of the financial statements: growth, profitability, capital structure, cash flow (banks also get net interest income, provisions, loans/deposits). With a financial-statement PDF it also extracts the auditor's opinion and risks from the notes: send the file with the caption `/fin SYMBOL`, or reply to the file with `/fin SYMBOL`. Scanned PDFs without a text layer cannot be read |
+
+### 🔍 Group 2: Find opportunities and market-wide information
+| Command | Aliases | What it does |
+|---|---|---|
+| `/loc [conditions]` | `/screen` | Market-wide stock screener: 3 built-in screens (breakout, accumulation, warning), or custom conditions (e.g. `/loc san=HOSE kn=MUA kl=1.2`) |
+| `/tinhieu` | `/signals` | Symbols with a MUA/TÍCH LUỸ or BÁN/GIẢM TỶ TRỌNG recommendation in the latest session (states which session's data) |
+| `/market` | | VN-Index: latest level (intraday it is the live level, fetched directly from Vietcap), change, range, volume |
+| `/tintuc` | `/news` | Latest macro news, legal documents, decrees and resolutions. Hourly automatic news is **on by default** for anyone who messages the bot; `/tintuc off` to turn it off, `/tintuc on` to turn it back on |
+
+### ⭐ Group 3: Watchlist and personal alerts
+| Command | Aliases | What it does |
+|---|---|---|
+| `/sub SYMBOL` | `/theodoi` | Add a symbol to your personal watchlist |
+| `/watchlist` | `/danhsach` | Show the watchlist with current recommendations |
+| `/unsub SYMBOL` | `/bosach` | Remove a symbol from the watchlist |
+| `/canhbao` | `/alerts` | Turn automatic end-of-day alerts on/off (15:05 each trading day) |
+| `/trangthai` | `/status` | Data status: price store, snapshot (fresh/stale/provisional), background loading progress, latest error, RAM in use |
+| `/help` | `/start` | Detailed help menu and quick-action keyboard |
+
+`/loc` supports these custom filter keys: `san` (exchange), `kn` (minimum
+recommendation), `rsi` (RSI zone), `may` (position relative to the Kumo
+cloud), `macd` (cross direction), `phanky` (divergence), `diem` (minimum
+score), `kl` (minimum volume ratio), `pe`/`roe` (only after running
+`backfill_fundamentals.py`). Formulas for the three built-in screens:
+[docs/cong-thuc.md](docs/cong-thuc.md) (Vietnamese).
+
+---
+
+## 5. Architecture
+
+Full diagram and design principles: [docs/kien-truc.md](docs/kien-truc.md)
+(Vietnamese). Formulas and thresholds for each indicator:
+[docs/cong-thuc.md](docs/cong-thuc.md) (Vietnamese).
 
 ```
-Vietcap/DNSE --> data/market_store.py (kho giá TOÀN SÀN, 1 file parquet)
-                        |  scripts/backfill_data.py (tải/cập nhật)
+Vietcap/DNSE --> data/market_store.py (WHOLE-MARKET price store, 1 parquet file)
+                        |  scripts/backfill_data.py (download/update)
                         v
-              analysis/snapshot.py (build_snapshot: recommend() 1 lần/mã,
-                        |            tuần tự, ghi snapshot.parquet)
-                        |  scripts/build_snapshot.py, hoặc tự động qua
-                        |  bot/scheduler.py: 11:35 (tạm tính) và 15:05
+              analysis/snapshot.py (build_snapshot: recommend() once per symbol,
+                        |            sequential, writes snapshot.parquet)
+                        |  scripts/build_snapshot.py, or automatically via
+                        |  bot/scheduler.py: 11:35 (provisional) and 15:05
                         v
-              analysis/screener.py, /tinhieu  --  CHỈ ĐỌC snapshot.parquet
+              analysis/screener.py, /tinhieu  --  READ-ONLY on snapshot.parquet
                         |
                         v
                    bot/ (aiogram, polling)
 ```
 
-Nguyên tắc hợp lưu quan trọng nhất: **Ichimoku có quyền phủ quyết khuyến
-nghị MUA** khi giá nằm dưới mây Kumo, bất kể điểm tổng của MACD/RSI cao bao
-nhiêu — xem `analysis/scoring.py`.
+The most important confluence rule: **Ichimoku can veto a buy
+recommendation** when the price is below the Kumo cloud, however high the
+combined MACD/RSI score is (see `analysis/scoring.py`).
 
-Các hàm nặng (tra cứu, khuyến nghị, vẽ biểu đồ, text mining BCTC, quét
-watchlist) chạy qua `await asyncio.to_thread(...)` trong handler, nên `/help`
-vẫn trả lời ngay khi đang có lệnh nặng khác (xem `tests/test_nonblocking.py`).
+Heavy functions (lookups, recommendations, charts, financial-statement text
+mining, watchlist scans) run through `await asyncio.to_thread(...)` in the
+handlers, so `/help` still answers immediately while another heavy command is
+running (see `tests/test_nonblocking.py`).
 
 ---
 
-## 5b. Kiểm định định lượng
+## 5b. Quantitative validation
 
-### Phân tích Information Coefficient (IC)
+### Information Coefficient (IC) analysis
 
-`python scripts/ic_analysis.py` (module `backtest/ic.py`). Mỗi phiên t, trên
-**mặt cắt** các mã trong vũ trụ thanh khoản *tại thời điểm đó* (chọn theo dữ
-liệu đến hết tháng trước), tính tương quan hạng Spearman giữa điểm của từng
-hệ chỉ báo (chỉ dùng dữ liệu đến t) và lợi suất từ **giá mở cửa t+1** đến giá
-mở cửa t+1+h. IC đo xem điểm số có **xếp hạng đúng** mã nào sẽ tăng hơn mã nào
-hay không. Kết quả đầy đủ: `outputs/ic/` (`ic_summary.csv`, `ic_daily.csv`,
+`python scripts/ic_analysis.py` (module `backtest/ic.py`). For each session t,
+across the **cross-section** of symbols in the liquid universe *at that time*
+(selected with data up to the end of the previous month), it computes the
+Spearman rank correlation between each indicator's score (using data up to t
+only) and the return from the **open of t+1** to the open of t+1+h. IC
+measures whether the score **ranks correctly** which stocks will outperform
+which. Full results: `outputs/ic/` (`ic_summary.csv`, `ic_daily.csv`,
 `ic_monthly.csv`, `ic_decay.png`).
 
-Mẫu: 02/01/2024 – 22/09/2026, 675 phiên, trung vị 280 mã/phiên.
+Sample: 02/01/2024 – 22/09/2026, 675 sessions, median 280 symbols per session.
 
-| Chỉ báo | h | IC TB | Độ lệch chuẩn | ICIR | t-stat | t-stat Newey-West | Tháng IC > 0 |
+| Indicator | h | Mean IC | Std dev | ICIR | t-stat | Newey–West t-stat | Months with IC > 0 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| MACD | 5 | 0,0025 | 0,117 | 0,02 | 0,55 | 0,32 | 58% |
-| MACD | 10 | 0,0152 | 0,111 | 0,14 | 3,54 | 1,72 | 61% |
-| MACD | 20 | 0,0163 | 0,104 | 0,16 | 4,00 | 1,44 | 66% |
-| RSI | 5 | −0,0155 | 0,130 | −0,12 | −3,09 | −1,88 | 33% |
-| RSI | 10 | 0,0050 | 0,124 | 0,04 | 1,04 | 0,52 | 61% |
-| RSI | 20 | 0,0212 | 0,119 | 0,18 | 4,56 | 1,72 | 69% |
-| Ichimoku | 5 | 0,0082 | 0,131 | 0,06 | 1,62 | 0,91 | 64% |
-| Ichimoku | 10 | 0,0160 | 0,124 | 0,13 | 3,34 | 1,42 | 64% |
-| Ichimoku | 20 | 0,0218 | 0,117 | 0,19 | 4,79 | 1,50 | 66% |
-| Điểm tổng | 5 | −0,0010 | 0,133 | −0,01 | −0,19 | −0,11 | 58% |
-| Điểm tổng | 10 | 0,0135 | 0,125 | 0,11 | 2,78 | 1,25 | 61% |
-| Điểm tổng | 20 | 0,0227 | 0,113 | 0,20 | 5,15 | 1,72 | 72% |
+| MACD | 5 | 0.0025 | 0.117 | 0.02 | 0.55 | 0.32 | 58% |
+| MACD | 10 | 0.0152 | 0.111 | 0.14 | 3.54 | 1.72 | 61% |
+| MACD | 20 | 0.0163 | 0.104 | 0.16 | 4.00 | 1.44 | 66% |
+| RSI | 5 | −0.0155 | 0.130 | −0.12 | −3.09 | −1.88 | 33% |
+| RSI | 10 | 0.0050 | 0.124 | 0.04 | 1.04 | 0.52 | 61% |
+| RSI | 20 | 0.0212 | 0.119 | 0.18 | 4.56 | 1.72 | 69% |
+| Ichimoku | 5 | 0.0082 | 0.131 | 0.06 | 1.62 | 0.91 | 64% |
+| Ichimoku | 10 | 0.0160 | 0.124 | 0.13 | 3.34 | 1.42 | 64% |
+| Ichimoku | 20 | 0.0218 | 0.117 | 0.19 | 4.79 | 1.50 | 66% |
+| Total score | 5 | −0.0010 | 0.133 | −0.01 | −0.19 | −0.11 | 58% |
+| Total score | 10 | 0.0135 | 0.125 | 0.11 | 2.78 | 1.25 | 61% |
+| Total score | 20 | 0.0227 | 0.113 | 0.20 | 5.15 | 1.72 | 72% |
 
 ![IC decay](outputs/ic/ic_decay.png)
 
-**Diễn giải — kết quả gần như bằng 0, và cần nói thẳng như vậy:**
+The chart labels are in Vietnamese: "Diem tong" = total score, "Horizon (so
+phien...)" = horizon in sessions, "thanh doc" = vertical bars (95% Newey–West
+confidence intervals).
 
-- **IC rất nhỏ.** Mọi |IC| ≤ 0,023. Không có hệ nào, kể cả điểm tổng, có ý
-  nghĩa thống kê ở mức 5% sau khi hiệu chỉnh: t-stat Newey-West cao nhất là
-  1,72 (< 1,96).
-- **t-stat thường bị thổi phồng.** Với h = 10–20, lợi suất của hai phiên liền
-  nhau dùng chung 9–19 phiên, nên chuỗi IC tự tương quan mạnh. t-stat thường
-  (3,5–5,2, trông "rất có ý nghĩa") cao gấp 2–3 lần t-stat Newey-West (độ trễ =
-  h). Nếu chỉ báo cáo t-stat thường sẽ tự lừa mình.
-- **Đảo chiều ngắn hạn là tín hiệu rõ nhất, và nó ngược chiều chiến lược.** Ở
-  h = 1 phiên IC **âm có ý nghĩa**: RSI −0,038 (t Newey-West −7,7, chỉ 6% số
-  tháng có IC > 0), điểm tổng −0,020 (t −4,1). Mã có điểm cao hôm nay có xu
-  hướng giảm lại trong 1–2 phiên kế tiếp; từ h ≈ 10 phiên IC mới chuyển sang
-  dương, và vẫn yếu. Chiến lược mua ngay giá mở cửa sau ngày điểm cao, với dừng lỗ
-  1,5 ATR, đi đúng vào nhịp điều chỉnh này. Đó là một lời giải thích hợp lý
-  cho kết quả backtest yếu ở mục dưới.
-- **Giới hạn:** chỉ ~2,7 năm dữ liệu (kho giữ ~750 phiên mỗi mã), giá đã điều
-  chỉnh cổ tức, vũ trụ lấy sàn theo danh sách hiện tại. IC đo khả năng *xếp
-  hạng* giữa các mã; chiến lược thật là *định thời điểm* có stop/target, nên
-  hai thước đo bổ sung cho nhau chứ không thay thế nhau.
+**Interpretation: the result is essentially zero, and it should be said
+plainly.**
 
-### Backtest đầy đủ so với VN-Index
+- **IC is very small.** Every |IC| ≤ 0.023. No indicator, the total score
+  included, is statistically significant at 5% after correction: the highest
+  Newey–West t-stat is 1.72 (< 1.96).
+- **The plain t-stat is inflated.** At h = 10–20, the returns of two adjacent
+  sessions share 9–19 sessions, so the IC series is strongly autocorrelated.
+  The plain t-stats (3.5–5.2, which look "highly significant") are 2–3× the
+  Newey–West t-stats (lag = h). Reporting only the plain t-stat would be
+  fooling yourself.
+- **Short-term reversal is the clearest signal, and it works against the
+  strategy.** At h = 1 session, IC is **significantly negative**: RSI −0.038
+  (Newey–West t −7.7, IC > 0 in only 6% of months), total score −0.020
+  (t −4.1). Stocks that score high today tend to fall back over the next 1–2
+  sessions; IC only turns positive from h ≈ 10 sessions, and stays weak. A
+  strategy that buys at the next open after a high score, with a 1.5 ATR stop,
+  walks straight into that pullback. That is a plausible explanation for the
+  weak backtest below.
+- **Limitations:** only ~2.7 years of data (the store keeps ~750 sessions per
+  symbol), dividend-adjusted prices, and each symbol's exchange taken from the
+  current listing. IC measures the ability to *rank* stocks against each
+  other; the actual strategy *times* entries with stops and targets, so the
+  two measures complement rather than replace each other.
 
-`python scripts/run_backtest.py` → `outputs/backtest/` (bảng gốc:
-[`report.md`](outputs/backtest/report.md), sinh tự động, không sửa tay). Toàn
-bộ kho: 1.511 mã, kiểm định từ 14/11/2023 (sau 60 phiên khởi động chỉ báo) đến
-24/09/2026. Vũ trụ chọn theo thời điểm (~290 mã mỗi lát). Phí hai chiều 0,25%
-+ thuế bán 0,1%, vốn 100 triệu đồng. Walk-forward: train 12 tháng / test 3
-tháng, lưới 12 tổ hợp. Mọi con số dưới đây đều sau phí và thuế.
+### Full backtest vs VN-Index
 
-| Chiến lược | Giai đoạn | Lợi nhuận | CAGR | Sharpe | Sortino | Sụt giảm tối đa | Vòng quay/năm | Số lệnh | PSR | DSR |
+`python scripts/run_backtest.py` → `outputs/backtest/` (source tables:
+[`report.md`](outputs/backtest/report.md), generated automatically, never
+edited by hand). Whole store: 1,511 symbols, tested from 14/11/2023 (after a
+60-session indicator warm-up) to 24/09/2026. Universe selected point-in-time
+(~290 symbols per slice). Round-trip fees 0.25% + 0.1% sales tax, starting
+capital VND 100 million. Walk-forward: 12-month train / 3-month test, grid of
+12 combinations. Every figure below is after fees and taxes.
+
+| Strategy | Period | Return | CAGR | Sharpe | Sortino | Max drawdown | Turnover/yr | Trades | PSR | DSR |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Walk-forward out-of-sample** | 11/2024–09/2026 | −33,4% | −19,9% | −1,39 | −1,66 | −44,3% | 30,1 | 1.435 | 0,023 | 0,002 |
-| VN-Index mua và giữ | 11/2024–09/2026 | +44,1% | +22,1% | 1,09 | 1,50 | −18,1% | – | – | 0,923 | – |
-| Tham số mặc định, cả kỳ | 11/2023–09/2026 | −42,6% | −17,8% | −1,21 | −1,45 | −47,7% | 25,6 | 2.121 | 0,016 | 0,001 |
-| Tốt nhất in-sample (12 tổ hợp) | 11/2023–09/2026 | −31,0% | −12,3% | −0,78 | −0,94 | −38,9% | 27,7 | 2.348 | 0,088 | 0,013 |
-| VN-Index mua và giữ | 11/2023–09/2026 | +60,0% | +18,1% | 1,01 | 1,37 | −18,1% | – | – | 0,949 | – |
+| **Walk-forward out-of-sample** | 11/2024–09/2026 | −33.4% | −19.9% | −1.39 | −1.66 | −44.3% | 30.1 | 1,435 | 0.023 | 0.002 |
+| VN-Index buy & hold | 11/2024–09/2026 | +44.1% | +22.1% | 1.09 | 1.50 | −18.1% | – | – | 0.923 | – |
+| Default parameters, full period | 11/2023–09/2026 | −42.6% | −17.8% | −1.21 | −1.45 | −47.7% | 25.6 | 2,121 | 0.016 | 0.001 |
+| Best in-sample (of 12 combinations) | 11/2023–09/2026 | −31.0% | −12.3% | −0.78 | −0.94 | −38.9% | 27.7 | 2,348 | 0.088 | 0.013 |
+| VN-Index buy & hold | 11/2023–09/2026 | +60.0% | +18.1% | 1.01 | 1.37 | −18.1% | – | – | 0.949 | – |
 
-Độ nhạy chi phí (phí hai chiều; thuế bán 0,1% giữ nguyên):
+Cost sensitivity (round-trip fee; the 0.1% sales tax is unchanged):
 
-| Phí hai chiều | Mặc định cả kỳ: CAGR / Sharpe | Walk-forward OOS: CAGR / Sharpe |
+| Round-trip fee | Default, full period: CAGR / Sharpe | Walk-forward OOS: CAGR / Sharpe |
 |---|---|---|
-| 0,15% | −14,9% / −0,98 | −18,2% / −1,25 |
-| 0,25% | −17,8% / −1,21 | −19,9% / −1,39 |
-| 0,35% | −19,4% / −1,34 | −18,0% / −1,24 |
+| 0.15% | −14.9% / −0.98 | −18.2% / −1.25 |
+| 0.25% | −17.8% / −1.21 | −19.9% / −1.39 |
+| 0.35% | −19.4% / −1.34 | −18.0% / −1.24 |
 
-![Đường vốn so với VN-Index](outputs/backtest/equity_vs_vnindex.png)
+![Equity curve vs VN-Index](outputs/backtest/equity_vs_vnindex.png)
 
-**Diễn giải:**
+The chart labels are in Vietnamese: "VN-Index mua va giu" = VN-Index buy &
+hold, "Tham so mac dinh, ca ky" = default parameters, full period.
 
-- **Chiến lược thua VN-Index rất xa và lỗ tuyệt đối.** Cả **12/12 tổ hợp
-  tham số** đều lỗ trên cả kỳ (CAGR từ −12% đến −27%,
-  [`grid_full_period.csv`](outputs/backtest/grid_full_period.csv)). Đây không
-  phải một bộ tham số kém may mắn; cả họ chiến lược không có lợi thế trên mẫu
-  này, khớp với kết quả IC ≈ 0 ở trên.
-- **PSR/DSR xác nhận điều đó.** Xác suất Sharpe thật > 0 của walk-forward chỉ
-  0,023; sau khi trừ thiên lệch chọn lọc từ 12 lần thử (DSR) còn 0,002. Ngay cả
-  tổ hợp tốt nhất in-sample (Sharpe −0,78) cũng chỉ có DSR 0,013.
-- **Chi phí không phải nguyên nhân chính, nhưng cũng không nhỏ.** Vòng quay
-  25–30 lần vốn mỗi năm (giữ lệnh trung vị 4 phiên). Giảm phí từ 0,35% xuống
-  0,15% chỉ cải thiện CAGR khoảng 4,5 điểm %, vẫn lỗ nặng. Trung bình mỗi lệnh lỗ
-  −0,31% *trước* phí, −0,66% sau phí. Ở cột walk-forward, phí 0,35% có kết quả
-  tốt hơn 0,25% vì mỗi mức phí chọn lại tham số trên train (ra tổ hợp khác),
-  không phải vì phí cao giúp có lời.
-- **Sửa phương pháp làm kết quả xấu đi.** Cùng một bộ tin hiệu, chạy qua
-  engine ở từng commit ([`engine_ablation.csv`](outputs/backtest/engine_ablation.csv),
-  `scripts/engine_ablation.py`): engine gốc −33,7% (717/2.323 lệnh bán ngay
-  ngày làm việc kế tiếp, vi phạm T+2) → thêm T+2 −23,2% → thêm khớp gap ở giá
-  mở cửa −35,9% → thêm kẹt giá sàn −42,6%. T+2 làm kết quả *tốt lên* (bị buộc
-  giữ qua nhịp đảo chiều ngắn hạn, đúng như IC âm ở h = 1–2), còn gap và giá
-  sàn làm xấu đi đáng kể. Con số −33,7% cũ là lạc quan không có cơ sở.
-- Khung 3/6 tháng gần nhất (yêu cầu của đề, `outputs/backtest_3m.csv`,
-  `backtest_6m.csv`) quá ngắn để kết luận gì: +2,2% so với VN-Index −5,1%
-  (3 tháng), −2,0% so với −0,2% (6 tháng).
+**Interpretation:**
 
-**Giới hạn đã biết:** ~2,9 năm dữ liệu (một chu kỳ thị trường); VN-Index là chỉ
-số giá (không gồm cổ tức), mua-và-giữ không tính phí; sàn của mã lấy theo danh
-sách hiện tại; mã huỷ niêm yết trước khi dựng kho không có trong kho; quy tắc
-giá sàn khá bảo thủ (cả phiên coi như không bán được dù có thể đã khớp trước khi
-chạm sàn).
+- **The strategy trails VN-Index by a wide margin and loses money in absolute
+  terms.** All **12 of 12 parameter combinations** lose over the full period
+  (CAGR from −12% to −27%,
+  [`grid_full_period.csv`](outputs/backtest/grid_full_period.csv)). This is
+  not one unlucky parameter set; the whole strategy family has no edge on
+  this sample, consistent with the IC ≈ 0 result above.
+- **PSR/DSR confirm it.** The probability that the walk-forward's true Sharpe
+  is > 0 is only 0.023; after removing the selection bias of 12 trials (DSR)
+  it drops to 0.002. Even the best in-sample combination (Sharpe −0.78) has a
+  DSR of only 0.013.
+- **Costs are not the main cause, but they are not small either.** Turnover is
+  25–30× capital per year (median holding period 4 sessions). Cutting fees
+  from 0.35% to 0.15% improves CAGR by only about 4.5 percentage points; it
+  still loses heavily. The average trade loses −0.31% *before* costs and
+  −0.66% after. In the walk-forward column, the 0.35% fee beats 0.25% because
+  each fee level re-selects parameters on the train windows (ending up with
+  different combinations), not because higher fees help.
+- **Fixing the methodology made the results worse.** Replaying the same
+  signals through the engine at each commit
+  ([`engine_ablation.csv`](outputs/backtest/engine_ablation.csv),
+  `scripts/engine_ablation.py`): original engine −33.7% (717 of 2,323 trades
+  sold on the next business day, violating T+2) → with T+2 −23.2% → with
+  gap fills at the open −35.9% → with limit-down locks −42.6%. T+2 *improved*
+  the result (positions were forced to sit through the short-term reversal,
+  matching the negative IC at h = 1–2), while gaps and the price floor made it
+  substantially worse. The old −33.7% was unjustifiably optimistic.
+- The latest 3- and 6-month windows (required by the original course brief;
+  `outputs/backtest_3m.csv`, `backtest_6m.csv`) are too short to conclude
+  anything: +2.2% vs VN-Index −5.1% (3 months), −2.0% vs −0.2% (6 months).
+
+**Known limitations:** ~2.9 years of data (one market cycle); VN-Index is a
+price index (no dividends) and buy & hold pays no fees; each symbol's exchange
+comes from the current listing; symbols delisted before the store was built
+are missing from it; the limit-down rule is conservative (the whole session
+counts as unsellable even if the order could have filled before the price
+reached the floor).
 
 ---
 
-## 6. Nguồn dữ liệu
+## 6. Data sources
 
-| Loại dữ liệu | Nguồn chính | Nguồn dự phòng | Cần API key? |
+| Data | Primary source | Backup source | API key needed? |
 |---|---|---|---|
-| Giá lịch sử/cuối phiên (OHLCV) | Kho toàn sàn nạp từ Vietcap (`data/vietcap.py`, endpoint công khai bảng giá); mã ngoài kho: DNSE OpenAPI (`data/dnse.py`) | Vietcap/VCI qua `vnstock` | DNSE: có; Vietcap: không |
-| Danh sách mã toàn sàn | DNSE (`/market/instruments`) | Vietcap (`/price/symbols/getAll`) | Không (Vietcap) |
-| Báo cáo tài chính, chỉ số cơ bản | Vietcap/VCI qua `vnstock` | — | Không |
-| Ngành (industry map) | Vietcap/VCI qua `vnstock` | — | Không |
-| Tin tức công bố thông tin | Vietcap/VCI qua `vnstock` | — | Không |
-| Realtime (khớp lệnh trực tiếp) | **Chưa cài** — `data/realtime.py` mới có giao diện + stub, mặc định tắt (`realtime.enabled: false`) | — | — |
+| Historical/end-of-day prices (OHLCV) | Whole-market store loaded from Vietcap (`data/vietcap.py`, public price-board endpoint); symbols outside the store: DNSE OpenAPI (`data/dnse.py`) | Vietcap/VCI via `vnstock` | DNSE: yes; Vietcap: no |
+| Whole-market symbol list | DNSE (`/market/instruments`) | Vietcap (`/price/symbols/getAll`) | No (Vietcap) |
+| Financial statements, fundamentals | Vietcap/VCI via `vnstock` | – | No |
+| Industry map | Vietcap/VCI via `vnstock` | – | No |
+| Corporate disclosures | Vietcap/VCI via `vnstock` | – | No |
+| Realtime (live trades) | **Not implemented**: `data/realtime.py` only has an interface and a stub, off by default (`realtime.enabled: false`) | – | – |
 
-`data/router.py` là nơi DUY NHẤT biết thứ tự ưu tiên nguồn — phần còn lại
-của hệ thống chỉ gọi `get_router().ohlcv(...)` và không quan tâm dữ liệu đến
-từ đâu. Khi nguồn lỗi/timeout/hết hạn mức, router tự chuyển sang nguồn dự
-phòng theo thứ tự khai báo ở `config/settings.yaml: data.price_sources` /
-`data.fundamental_sources`.
+`data/router.py` is the ONLY place that knows the source priority; the rest
+of the system just calls `get_router().ohlcv(...)` and does not care where the
+data comes from. When a source errors, times out or hits its quota, the router
+switches to the next source in the order declared in
+`config/settings.yaml: data.price_sources` / `data.fundamental_sources`.
 
-### Xử lý sự cố dữ liệu
+### Data troubleshooting
 
-| Tình huống | Hệ thống làm gì / bạn nên làm gì |
+| Situation | What the system does / what you should do |
 |---|---|
-| DNSE lỗi / không kết nối được / chưa có API key | `data/router.py` chuyển sang Vietcap. Không kết nối được (vd Render ở Singapore bị DNSE chặn) thì bỏ qua DNSE 15 phút, không chờ lại |
-| Bị giới hạn tần suất (429, hoặc vnstock/vnai tự gọi `sys.exit()` khi chạm hạn mức) | Lùi theo cấp số nhân tối đa 5 lần thử; nếu vẫn lỗi, đợi vài phút rồi chạy lại — bản Guest của vnstock giới hạn khoảng 20 lượt/phút |
-| `backfill_data.py`/`backfill_fundamentals.py` báo hàng loạt mã lỗi hoặc trả về rỗng dù không có exception | Endpoint công khai của Vietcap **không chính thức**, có thể tạm thời giới hạn/chặn theo IP hoặc tần suất truy cập bất thường — thử lại sau vài phút; nếu chạy trên máy chủ/cloud ở nước ngoài, khả năng cao bị chặn nhiều hơn chạy từ máy cá nhân tại Việt Nam (xem mục 7) |
-| Tất cả nguồn đều lỗi | Trả dữ liệu cũ trong cache (nếu có, ghi cảnh báo vào log); không có cache thì báo lỗi cho người dùng. Bot không sập |
-| Dữ liệu bẩn (BOM, CRLF, trùng lặp) | `data/cleaner.py` chuẩn hoá trước khi ghi cache |
-| Mã không tồn tại / chưa đủ lịch sử | Handler bắt lỗi cụ thể, trả tin nhắn dễ hiểu qua `bot/formatters.py:error_card()` |
-| Bot vừa khởi động trên máy trắng dữ liệu (lần đầu, hoặc Render gói Free vừa restart) | Bot tự dựng dữ liệu **tạm** cho danh sách theo dõi (`config/universe.yaml`, ~12 mã) trong vài giây — `/loc`, `/tinhieu` có kết quả ngay kèm ghi chú "Dữ liệu tạm thời" — rồi nạp toàn sàn ở nền (vài phút) |
-| `/loc`, `/tinhieu` báo đang nạp hoặc báo lỗi | Thông báo nói rõ tiến độ (vd "450/1500 mã, khoảng 2 phút nữa") hoặc lỗi của lần nạp gần nhất. Gõ `/trangthai` để xem chi tiết |
+| DNSE errors / cannot connect / no API key | `data/router.py` switches to Vietcap. If it cannot connect at all (e.g. Render in Singapore blocked by DNSE), DNSE is skipped for 15 minutes rather than retried |
+| Rate-limited (429, or vnstock/vnai calling `sys.exit()` when the quota is hit) | Exponential backoff, up to 5 attempts; if it still fails, wait a few minutes and rerun. The vnstock Guest tier allows about 20 requests per minute |
+| `backfill_data.py`/`backfill_fundamentals.py` reports many failed symbols, or empty results without an exception | Vietcap's public endpoint is **unofficial** and may temporarily rate-limit or block by IP or unusual request patterns. Retry after a few minutes; from a server/cloud abroad you are more likely to be blocked than from a personal machine in Vietnam (see section 7) |
+| All sources fail | Returns stale cached data (if any, with a warning in the log); with no cache, reports an error to the user. The bot does not crash |
+| Dirty data (BOM, CRLF, duplicates) | `data/cleaner.py` normalises it before caching |
+| Unknown symbol / not enough history | Handlers catch specific errors and reply with a readable message via `bot/formatters.py:error_card()` |
+| The bot just started on a machine with no data (first run, or Render Free just restarted) | The bot builds **provisional** data for the watchlist (`config/universe.yaml`, ~12 symbols) within seconds, so `/loc` and `/tinhieu` answer immediately with a "Dữ liệu tạm thời" (provisional data) note, then loads the whole market in the background (a few minutes) |
+| `/loc`, `/tinhieu` report loading or an error | The message states the progress (e.g. "450/1500 mã, khoảng 2 phút nữa", i.e. 450/1,500 symbols, about 2 minutes left) or the error from the latest load. Type `/trangthai` for details |
 
 ---
 
-## 7. Vận hành và triển khai
+## 7. Operations and deployment
 
-Bot dùng **long polling** (`dispatcher.start_polling()`) — không cần mở port, webhook hay tên miền SSL.
+The bot uses **long polling** (`dispatcher.start_polling()`): no open port,
+webhook or SSL domain is needed.
 
-### 7.1. Chạy trên máy cá nhân (để thử / phát triển)
+### 7.1. Running on a personal machine (testing / development)
 
-Bản chạy chính thức đặt trên Render (mục 7.3). Khi cần chạy thử trên máy:
+The production instance runs on Render (section 7.3). To run it locally:
 
 ```bash
 python scripts/run_bot.py
 ```
 
-Không cần đặt `PYTHONPATH` hay `pip install -e .` — script tự thêm `src/`
-vào đường dẫn. Log hiện trên cửa sổ và ghi vào **`logs/bot.log`**; đóng cửa
-sổ (hoặc `Ctrl+C`) là bot dừng.
+No need to set `PYTHONPATH` or run `pip install -e .`; the script adds `src/`
+to the path itself. Logs appear in the window and are written to
+**`logs/bot.log`**; closing the window (or `Ctrl+C`) stops the bot.
 
-> ⚠️ **Tạm dừng service trên Render trước khi chạy trên máy.** Hai tiến
-> trình dùng chung một `TELEGRAM_BOT_TOKEN` sẽ tranh nhau nhận tin nhắn và
-> Telegram báo lỗi xung đột (`Conflict: terminated by other getUpdates`).
+> ⚠️ **Suspend the Render service before running locally.** Two processes
+> sharing one `TELEGRAM_BOT_TOKEN` fight over incoming messages and Telegram
+> reports a conflict (`Conflict: terminated by other getUpdates`).
 
-**Cách kiểm tra bot còn sống:** gõ `/trangthai` trên Telegram (trả lời được
-là bot đang chạy).
+**How to check the bot is alive:** type `/trangthai` in Telegram (if it
+answers, the bot is running).
 
-### 7.2. Chạy trên VPS Linux bằng Docker
+### 7.2. Running on a Linux VPS with Docker
 
-Repo có sẵn `Dockerfile` và `docker-compose.yml`:
+The repo ships a `Dockerfile` and `docker-compose.yml`:
 
 ```bash
-# 1. Clone code về VPS Linux (Ubuntu / Debian / CentOS)
+# 1. Clone the code onto the Linux VPS (Ubuntu / Debian / CentOS)
 git clone https://github.com/thienanpham160806-code/bot-phan-tich.git
 cd bot-phan-tich
 
-# 2. Cấu hình biến môi trường
+# 2. Configure environment variables
 cp .env.example .env
-nano .env  # Điền TELEGRAM_BOT_TOKEN
+nano .env  # Fill in TELEGRAM_BOT_TOKEN
 
-# 3. Chạy nền bằng Docker
+# 3. Run in the background with Docker
 docker compose up -d --build
 
-# Xem log hoạt động:
+# Follow the logs:
 docker compose logs -f
 ```
 
-### 7.3. Triển khai trên Render.com — giới hạn thực tế và lựa chọn
+### 7.3. Deploying on Render.com: real limits and options
 
-**Giới hạn của gói Free (đã gặp thực tế khi deploy):**
+**Limits of the Free plan (hit in practice while deploying):**
 
-- **512 MB RAM, CPU chia sẻ.** Riêng việc nạp thư viện của bot (aiogram,
-  pandas, vnstock) đã chiếm khoảng 250–300 MB, chỉ còn khoảng 200 MB cho
-  dữ liệu. Toàn sàn vẫn chạy được nhưng sát giới hạn; vượt là container bị
-  tắt và khởi động lại.
-- **Không có ổ đĩa lưu bền.** Mọi thứ trong `data/` (kho giá, snapshot,
-  danh sách theo dõi, cài đặt cảnh báo của người dùng) **mất sạch mỗi lần
-  container khởi động lại** (deploy mới, lỗi, hoặc Render tự khởi động lại).
-  Mỗi lần như vậy bot phải nạp lại kho giá từ đầu: vài giây đầu chỉ có dữ
-  liệu tạm cho danh sách theo dõi, vài phút sau mới có đủ vũ trụ.
-- **Tự ngủ sau ~15 phút không có request HTTP.** Bot chỉ polling Telegram
-  ra ngoài, không ai gọi HTTP vào, nên nếu không có dịch vụ ping thì cả
-  tiến trình bị dừng (kể cả lịch quét 15:05).
-- **Không có Background Worker** (loại phù hợp đúng bản chất bot polling,
-  không bị quét port). Gói Free báo *"service type is not available for
-  this plan"*, nên phải chạy dưới dạng Web Service kèm health-check HTTP
-  giả trong `bot/main.py`.
+- **512 MB RAM, shared CPU.** Loading the bot's libraries alone (aiogram,
+  pandas, vnstock) takes about 250–300 MB, leaving about 200 MB for data. The
+  whole market still fits but close to the limit; going over gets the
+  container killed and restarted.
+- **No persistent disk.** Everything in `data/` (price store, snapshot,
+  watchlists, users' alert settings) is **wiped every time the container
+  restarts** (a new deploy, a crash, or a Render-initiated restart). Each time,
+  the bot has to reload the price store from scratch: for the first few
+  seconds there is only provisional watchlist data; the full universe arrives
+  a few minutes later.
+- **Sleeps after ~15 minutes without an HTTP request.** The bot only polls
+  Telegram outbound and nobody calls it over HTTP, so without a ping service
+  the whole process stops (including the 15:05 scan).
+- **No Background Worker** (the type that actually fits a polling bot and
+  isn't port-scanned). The Free plan reports *"service type is not available
+  for this plan"*, so it has to run as a Web Service with a dummy HTTP health
+  check in `bot/main.py`.
 
-**Ba lựa chọn:**
+**Three options:**
 
-| | Lựa chọn | Dữ liệu | Chi phí | Hợp khi |
+| | Option | Data | Cost | Best for |
 |---|---|---|---|---|
-| **(a)** | **Chạy trên máy cá nhân** (mục 7.1) | Đầy đủ toàn sàn, giữ được qua các lần tắt/mở | Miễn phí | **Demo, chấm bài** — nhanh nhất, ổn định nhất |
-| (b) | Render gói trả phí + **Persistent Disk** | Đầy đủ, không mất khi restart | Trả phí hàng tháng | Cần chạy 24/7 lâu dài |
-| (c) | Render Free + vũ trụ rút gọn 300 mã + UptimeRobot | Rút gọn, nạp lại mỗi lần restart | Miễn phí | Muốn bot online 24/7 mà không trả phí, chấp nhận hạn chế |
+| **(a)** | **Run on a personal machine** (section 7.1) | Whole market, kept across restarts | Free | **Demos and grading**: fastest and most stable |
+| (b) | Paid Render plan + **Persistent Disk** | Whole market, survives restarts | Monthly fee | Long-term 24/7 operation |
+| (c) | Render Free + reduced 300-symbol universe + UptimeRobot | Reduced, reloaded on every restart | Free | Keeping the bot online 24/7 without paying, accepting the limits |
 
-**Khuyến nghị: dùng (a) khi demo và chấm bài.** Chạy `python scripts/run_bot.py`
-trên máy cá nhân sau khi đã chạy `scripts/backfill_data.py` và
-`scripts/build_snapshot.py` — có ngay dữ liệu toàn sàn, `/loc` trả lời tức
-thì. (c) chỉ là phương án dự phòng "cho bot luôn online", không nên dùng để
-trình diễn trước hội đồng vì có thể đúng lúc đó container vừa restart và
-đang nạp lại dữ liệu.
+**Recommendation: use (a) for demos and grading.** Run
+`python scripts/run_bot.py` on a personal machine after running
+`scripts/backfill_data.py` and `scripts/build_snapshot.py`; whole-market data
+is available immediately and `/loc` answers instantly. (c) is only a fallback
+for keeping the bot online; don't use it for a live presentation, since the
+container may have just restarted and still be reloading data.
 
-**Cách làm (b):** nâng service lên gói trả phí → đổi `render.yaml` sang
-`type: worker` (không cần health-check/UptimeRobot) → thêm Persistent Disk
-gắn vào `/app/data` (thư mục `DATA_DIR` mặc định trong Docker image) →
-deploy lại. Bỏ các biến giới hạn quy mô ở (c) để chạy toàn sàn.
+**How to do (b):** upgrade the service to a paid plan → change `render.yaml`
+to `type: worker` (no health check / UptimeRobot needed) → add a Persistent
+Disk mounted at `/app/data` (the default `DATA_DIR` in the Docker image) →
+redeploy. Drop the scale-limiting variables from (c) to run the whole market.
 
-**Cách làm (c):**
+**How to do (c):**
 
-1. Render → **New +** → **Blueprint** → chọn repo này, nhánh `main` —
-   `render.yaml` đã đặt sẵn `UNIVERSE_MAX_SYMBOLS=300`, `MARKET_COUNT_BACK=400`,
-   `SNAPSHOT_MAX_WORKERS=1`. **Nếu service được tạo thủ công** (New + →
-   Web Service, không qua Blueprint) thì `render.yaml` **không tự áp dụng**:
-   phải tự thêm ba biến này trong tab **Environment** của service.
-2. Điền `TELEGRAM_BOT_TOKEN` → Deploy.
-3. UptimeRobot (miễn phí) → **Add New Monitor** → HTTP(s) →
-   `https://<ten-service>.onrender.com/healthz` → Interval **5 phút**.
-4. Kiểm tra trên Telegram: `/trangthai` (kho giá, snapshot, tiến độ nạp,
-   lỗi gần nhất, RAM) và `/trangthai chandoan` (RAM/CPU thật của container,
-   có gọi được Vietcap/DNSE không — gói Free không có Shell nên đây là cách
-   chẩn đoán duy nhất). Trên máy cá nhân chạy `python scripts/diagnose.py`.
+1. Render → **New +** → **Blueprint** → pick this repo, branch `main`.
+   `render.yaml` already sets `UNIVERSE_MAX_SYMBOLS=300`,
+   `MARKET_COUNT_BACK=400`, `SNAPSHOT_MAX_WORKERS=1`. **If the service was
+   created manually** (New + → Web Service, not via Blueprint), `render.yaml`
+   is **not applied automatically**: add these three variables yourself in
+   the service's **Environment** tab.
+2. Fill in `TELEGRAM_BOT_TOKEN` → Deploy.
+3. UptimeRobot (free) → **Add New Monitor** → HTTP(s) →
+   `https://<service-name>.onrender.com/healthz` → Interval **5 minutes**.
+4. Check in Telegram: `/trangthai` (price store, snapshot, loading progress,
+   latest error, RAM) and `/trangthai chandoan` (the container's real RAM/CPU,
+   whether Vietcap/DNSE are reachable; the Free plan has no Shell, so this is
+   the only way to diagnose). On a personal machine, run
+   `python scripts/diagnose.py`.
 
-### 7.4. Lịch chạy tự động
+### 7.4. Automatic schedule
 
-Chạy bằng `APScheduler`, giờ Việt Nam (`bot.timezone`):
+Runs on `APScheduler`, Vietnam time (`bot.timezone`):
 
-1. **Sau phiên sáng — `bot.midday_cron`, mặc định 11:35 thứ 2–6:** tải nến
-   đang chạy của hôm nay cho cả kho rồi tính lại snapshot. `/loc`, `/tinhieu`
-   có giá phiên sáng, kèm ghi chú "tạm tính" (nến chưa đóng, khối lượng mới
-   được nửa phiên). Không gửi cảnh báo. Đặt `midday_cron: ""` để tắt.
-2. **Cuối phiên — `bot.scan_cron`, mặc định 15:05 thứ 2–6:** tải lại nến
-   đóng cửa (ghi đè nến tạm tính), tính snapshot chính thức, rồi so trạng thái
-   các mã người dùng theo dõi (`/sub`) với lần quét trước. Chỉ gửi cảnh báo
-   khi có thay đổi: đổi khuyến nghị, MACD giao cắt, giá đổi vị trí so với mây
-   Kumo, RSI vào/ra vùng quá mua/quá bán, khối lượng > 2 lần TB20, hoặc giá
-   biến động > 4% (tối đa 3 cảnh báo/mã/ngày). Chạy bù trong vòng 1 giờ nếu bot
-   khởi động trễ.
-3. **Tin tức — `bot.news_cron`, mặc định mỗi giờ 08:00–22:00:** quét RSS
-   CafeF và VnExpress, phân loại theo từ khoá (Chính sách – Pháp luật / Vĩ mô
-   & TTCK), gửi tin đăng trong 2 giờ gần nhất cho người đang bật bản tin.
-   Nguồn "CafeF Vĩ mô" lẫn tin xã hội nên chỉ giữ tin khớp từ khoá.
+1. **After the morning session, `bot.midday_cron`, default 11:35 Mon–Fri:**
+   fetches today's in-progress candle for the whole store and recomputes the
+   snapshot. `/loc` and `/tinhieu` show morning-session prices with a
+   provisional note (the candle has not closed; volume covers half a
+   session). No alerts are sent. Set `midday_cron: ""` to disable.
+2. **End of day, `bot.scan_cron`, default 15:05 Mon–Fri:** reloads the
+   closing candle (overwriting the provisional one), computes the official
+   snapshot, then compares the state of users' watched symbols (`/sub`) with
+   the previous scan. Alerts are sent only on a change: a new recommendation,
+   a MACD cross, price moving relative to the Kumo cloud, RSI entering/leaving
+   overbought/oversold, volume > 2× the 20-day average, or a price move > 4%
+   (at most 3 alerts per symbol per day). Catches up within 1 hour if the bot
+   starts late.
+3. **News, `bot.news_cron`, default hourly 08:00–22:00:** scans the CafeF and
+   VnExpress RSS feeds, classifies items by keyword (Policy & Law / Macro &
+   Stock market), and sends items published in the last 2 hours to users who
+   have news turned on. The "CafeF Vĩ mô" (macro) feed mixes in social news,
+   so only keyword-matching items are kept.
 
-> ⚠️ **Render gói Free xoá CSDL mỗi lần khởi động lại** (danh sách `/sub`,
-> lựa chọn `/tintuc off`...). Bản tin tin tức vẫn tự phục hồi: chat nào nhắn
-> bot bất kỳ lệnh nào đều được bật sẵn bản tin (middleware `AutoSubscribeNews`
-> trong `bot/main.py`), nên sau khi restart chỉ cần nhắn bot một lần. Muốn
-> nhận tin ngay cả khi chưa kịp nhắn lại: đặt biến **`AUTO_SUBSCRIBE_CHAT_IDS`**
-> (các chat id, cách nhau dấu phẩy) trong tab Environment.
-
----
-
-## 8. Giấy phép thư viện
-
-Dự án dùng cho mục đích học tập. Lưu ý điều khoản của một số thư viện:
-
-- `vnstock` — giấy phép tuỳ chỉnh, miễn phí cho mục đích cá nhân, dùng thương mại cần xin phép tác giả.
-- DNSE LightSpeed API — có ràng buộc về việc phân phối lại dữ liệu, đọc kỹ điều khoản dịch vụ trước khi public repo.
+> ⚠️ **Render's Free plan wipes the database on every restart** (`/sub`
+> watchlists, `/tintuc off` choices...). The news digest still recovers
+> itself: any chat that sends the bot any command is subscribed by default
+> (the `AutoSubscribeNews` middleware in `bot/main.py`), so after a restart
+> you only need to message the bot once. To receive news even before
+> messaging it again, set **`AUTO_SUBSCRIBE_CHAT_IDS`** (comma-separated chat
+> ids) in the Environment tab.
 
 ---
 
-## 9. Miễn trừ trách nhiệm
+## 8. Library licences
 
-Đây là sản phẩm học thuật. Mọi tín hiệu do bot sinh ra **không phải** khuyến nghị đầu tư.
+This project is for educational purposes. Note the terms of some libraries:
+
+- `vnstock`: custom licence, free for personal use; commercial use requires
+  the author's permission.
+- DNSE LightSpeed API: has restrictions on redistributing data; read the
+  terms of service carefully before making the repo public.
+
+---
+
+## 9. Disclaimer
+
+This is an academic project. Signals produced by the bot are **not**
+investment advice.
