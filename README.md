@@ -1,5 +1,43 @@
 # bot-phan-tich
 
+![CI](https://github.com/thienanpham160806-code/bot-phan-tich/actions/workflows/ci.yml/badge.svg)
+
+## Overview (English)
+
+A Telegram bot and research stack for Vietnamese equities (HOSE/HNX/UPCOM).
+Daily OHLCV for ~1,500 symbols lives in one parquet store; `analysis/scoring.py`
+combines MACD, adaptive-threshold RSI and Ichimoku (with a below-cloud veto)
+into a score in [−100, 100]. `analysis/score_history.py` computes that score
+for every bar in one pass, matching the bar-by-bar reference exactly and
+running ~125–150× faster ([benchmark](docs/benchmark.md)).
+
+**Backtest methodology.** Signals at the close of t fill at the open of t+1;
+shares settle T+2 (counted in trading sessions); exits that gap through the
+stop or target fill at the open; sells on limit-down-locked sessions
+(per-exchange price bands) are deferred; 0.25% round-trip fees plus 0.1% sales
+tax. The universe is selected point-in-time. Parameters are chosen by
+walk-forward (12-month train, 3-month test, 12 combinations by Sharpe), and
+the stitched out-of-sample curve is evaluated with the Probabilistic and
+Deflated Sharpe Ratios (Bailey & López de Prado, 2014).
+
+**Result: no edge on this sample.** All figures are after costs, Nov 2023 – Sep 2026, from
+[`outputs/backtest/report.md`](outputs/backtest/report.md):
+
+| | Return | CAGR | Sharpe | Max DD | PSR | DSR |
+|---|---:|---:|---:|---:|---:|---:|
+| Walk-forward out-of-sample (Nov 2024 →) | −33.4% | −19.9% | −1.39 | −44.3% | 0.023 | 0.002 |
+| VN-Index buy & hold, same window | +44.1% | +22.1% | 1.09 | −18.1% | 0.923 | – |
+| Default parameters, full period | −42.6% | −17.8% | −1.21 | −47.7% | 0.016 | 0.001 |
+| VN-Index buy & hold, full period | +60.0% | +18.1% | 1.01 | −18.1% | 0.949 | – |
+
+All 12 parameter combinations lose money. Cross-sectional rank IC of the total
+score is +0.023 at 20 days (Newey–West t = 1.72, not significant) and −0.020
+at 1 day (t = −4.1, short-term reversal). Fixing T+2, gap fills and limit-down
+handling moved the same signals from −33.7% to −42.6%. Details (in
+Vietnamese): section 5b below and [INTERVIEW_NOTES.md](INTERVIEW_NOTES.md).
+
+---
+
 Telegram Bot phân tích kỹ thuật chứng khoán Việt Nam — hợp lưu ba hệ chỉ báo
 **MACD, RSI (ngưỡng thích ứng), Ichimoku Kinko Hyo** — trên **toàn sàn**
 HOSE/HNX/UPCOM (không chỉ vài mã theo dõi mẫu).
